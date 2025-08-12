@@ -16,7 +16,7 @@ See https://www.victronenergy.com/upload/documents/CCGX-Modbus-TCP-register-list
 
 ## High Level Cerbo Device Files 
 
-ess_gx.py        Main application to show status updates and log data at 1 Hz, specific to ricardocello
+[ess_gx.py](ess_gx.py)        Main application to show status updates and log data at 1 Hz, specific to ricardocello
 
 settings_gx.py   Modbus Unit Ids defined for the system, and IP address of the Cerbo GX
 
