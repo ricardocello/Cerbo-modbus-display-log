@@ -18,7 +18,9 @@ See settings_gx.py for Modbus Unit Ids for all devices in the system. These will
 how the Victron system is configured.
 
 High Level Cerbo Device Files 
+
 ess_gx.py        Main application to show status updates and log data at 1 Hz, specific to ricardocello
+
 settings_gx.py   Modbus Unit Ids defined for the system, and IP address of the Cerbo GX
 
 cerbo_gx.py        Base class for all other devices
@@ -40,7 +42,11 @@ shunt_gx.py        Handles Victron shunts used as battery monitor and as a DC So
 temperature_gx.py  Handles temperature sensors
 
 I/O Files
+
 color_status_display.py   Implements a class to conveniently display columnar data in an ANSI terminal window
+
 tab_delimited_log.py      Implements a tab delimited file logging and archiving mechanism
+
 modbus_tcp_client.py      A standalone implementation of a ModbusTCP client to talk to the Cerbo GX;
                           this is NOT based on pyModbus and can be used standalone to talk to any ModbusTCP device
+
