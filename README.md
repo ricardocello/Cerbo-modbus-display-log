@@ -6,11 +6,10 @@ Python 3.10.10 was used to test this code, and there are no external dependencie
 
 Important Note: The ess_gx.py application is specific to ricardocello Victron setup and should be used as an example of how to implement a tool to monitor a Cerbo GX or other VenusOS device locally using ModbusTCP.
 
-See https://www.victronenergy.com/upload/documents/CCGX-Modbus-TCP-register-list-3.60.xlsx for a list of all of the Modbus registers provided by VenusOS.
-
 Individual device files contain unit tests that demonstrate pulling various kinds of data from the Cerbo. Some of these should execute without any modification on any system.
 
 See settings_gx.py for Modbus Unit Ids for all devices in the system. These will vary depending on how the Victron system is configured.
+See https://www.victronenergy.com/upload/documents/CCGX-Modbus-TCP-register-list-3.60.xlsx for a list of all of the Modbus registers provided by VenusOS.
 
 ## High Level Cerbo Device Files 
 
