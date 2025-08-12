@@ -1,4 +1,3 @@
-[README.txt](https://github.com/user-attachments/files/21742414/README.txt)
 Cerbo-modbus-display-log project
 MIT License
 
