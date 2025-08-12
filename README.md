@@ -1,10 +1,8 @@
-Cerbo-modbus-display-log project
-
-MIT License
+**Cerbo-modbus-display-log project
+**
 
 
 Communicates with a Victron ESS controlled by the Cerbo GX device using ModbusTCP.
-
 Displays an ANSI status screen in a terminal window and logs overall status of the entire system every second.
 
 Python 3.10.10 was used to test this code, and there are no external dependencies :-) yay!
