@@ -22,13 +22,21 @@ ess_gx.py        Main application to show status updates and log data at 1 Hz, s
 settings_gx.py   Modbus Unit Ids defined for the system, and IP address of the Cerbo GX
 
 cerbo_gx.py        Base class for all other devices
+
 system_gx.py       Handles the high-level system device on the Cerbo GX
+
 acload_gx.py       Handles an energy meter used in an AC Load role; tested with emulated VM-3P75CT meters
+
 battery_gx.py      Handles a VE.Can (CANBus) battery BMS; only tested with EG4-LL v1 batteries
+
 grid_gx.py         Handles a Grid Meter device
+
 mppt_gx.py         Handles Smart Solar VE.Can MPPTs, specific to ricardocello 250/70 and 250/100 configuration
+
 quattro_gx.py      Handles split-phase Quattos (or Multiplus or Multiplus-II), only split=phase is supported
+
 shunt_gx.py        Handles Victron shunts used as battery monitor and as a DC Source
+
 temperature_gx.py  Handles temperature sensors
 
 I/O Files
