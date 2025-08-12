@@ -4,6 +4,9 @@ Communicates with a Victron Cerbo GX ESS using ModbusTCP.
 Displays an ANSI status screen in a terminal window and logs overall status of the entire system every second.
 Python 3.10.10 was used to test this code, and there are no external dependencies :-) yay!
 
+There is a sample .png file of the display and a 30-second gif in this repo for you to inspect.
+There is also a sample ess log file showing the tab-delimited format suitable for import into Excel or Numbers.
+
 Important Note: The ess_gx.py application is specific to ricardocello Victron setup and should be used as an example of how to implement a tool to monitor a Cerbo GX or other VenusOS device locally using ModbusTCP.
 
 Individual device files contain unit tests that demonstrate pulling various kinds of data from the Cerbo. Some of these should execute without any modification on any system.
