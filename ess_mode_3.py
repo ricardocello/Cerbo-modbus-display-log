@@ -769,6 +769,8 @@ class GridExportStatistics:
             if self.current_event is None:
                 self.current_event = self.Event(timestamp)
 
+            if self.previous_timestamp is None:
+                self.previous_timestamp = timestamp
             duration = timestamp - self.previous_timestamp
             self.current_event.measurement(-watts, duration.total_seconds())
 
