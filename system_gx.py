@@ -154,7 +154,7 @@ class System(CerboGX):
         super().__init__(addr)
 
     async def power_table(self):
-        # Returns a power table object with all of the current power values
+        # Returns a power table object with all the current power values
 
         table = PowerTable()
 
@@ -195,6 +195,15 @@ class System(CerboGX):
         # Feed DC PV into grid settings
         # /Settings/Cgwacs/OvervoltageFeedIn (2707)
         await self.write_uint(2707, 1 if yes_no else 0)
+
+    async def set_ess_mode_3(self, yes_no):
+        # /Settings/Cgwacs/Hub4Mode (2902)
+        await self.write_uint(2902, 3 if yes_no else 1)
+
+    async def is_ess_mode_3(self):
+        # /Settings/Cgwacs/Hub4Mode (2902)
+        result = await self.read_uint(2902)
+        return result == 3
 
     async def inverter_power_limit_watts(self):
         # Gets the maximum inverter power to the loads

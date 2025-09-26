@@ -168,6 +168,12 @@ class AllMPPT:
                 return 1
         return 0
 
+    async def disconnect(self):
+        # Disconnects from the Cerbo GX
+        for m in self.mppt:
+            await m[2].disconnect()
+        return 0
+
     def smartsolar(self, index):
         return self.mppt[index][2]
 
@@ -176,6 +182,13 @@ class AllMPPT:
         for m in self.mppt:
             r.append(await m[2].get_mppt_mode())
         return r
+
+    async def total_dc_power(self):
+        total_w = 0.0
+        for m in self.mppt:
+            w, v, a = await m[2].dc_power_watts()
+            total_w += w
+        return total_w
 
     async def read_pv_dc_values(self):
         # Gets the PV and DC values from all the MPPTs.

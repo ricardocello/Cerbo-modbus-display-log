@@ -30,7 +30,6 @@
 import time
 import asyncio
 
-import settings_gx
 from cerbo_gx import *
 
 
@@ -39,17 +38,19 @@ class ACLoad(CerboGX):
         super().__init__(addr, uid=uid)
 
     async def power_watts(self):
-        # Returns power in watts (total, L1, L2)
+        # Returns power in watts (total, L1, L2, L3)
         # /Ac/L1/Power (3900)
         # /Ac/L2/Power (3901)
+        # /Ac/L3/Power (3902)
         try:
-            result = await self.read(3900, 2)
+            result = await self.read(3900, 3)
         except self.errors:
-            return 0, 0, 0
+            return 0, 0, 0, 0
 
         l1_power = self.make_signed(result[0])
         l2_power = self.make_signed(result[1])
-        return (l1_power + l2_power), l1_power, l2_power
+        l3_power = self.make_signed(result[2])
+        return (l1_power + l2_power + l3_power), l1_power, l2_power, l3_power
 
     async def main(self):
         # Unit test code

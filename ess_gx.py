@@ -29,7 +29,8 @@
 import sys
 import time
 import asyncio
-from datetime import datetime
+
+from modbus_tcp_client import ModbusTCPClient
 
 import cerbo_gx
 import settings_gx
@@ -41,8 +42,9 @@ import mppt_gx
 import temperature_gx
 import shunt_gx
 import acload_gx
-import tab_delimited_log
-import color_status_display
+
+from ess_log import *
+from ess_status_display import *
 
 
 class ESS:
@@ -83,6 +85,9 @@ class ESS:
         self.starting_date = None                     # Date when this run started
         self.timestamp = None                         # Current timestamp
 
+        # Statistics
+        self.ess_stats = ESSStats()
+
         # ----- Grid -----
         self.grid_power = None                        # (total, L1, L2) Watts
         self.grid_house_power = None                  # (total, L1, L2) Watts
@@ -112,25 +117,24 @@ class ESS:
 
         # ----- PV Solar -----
         self.pv_power = None                          # (total, 250/100, 250/70) Watts
+        self.pv_dc_current = None                     # (total, 250/100, 250/70) Amps
+        self.pv_energy_yield_today = None             # (total, 250/100, 250/70) kWh
+        self.pv_efficiency = None                     # (total, 250/100, 250/70) %
+        self.pv_power_lost = None                     # (total, 250/100, 250/70) Watts
+        self.pv_net_efficiency = None                 # %
         self.pv_voltage = None                        # (250/100, 250/70) Volts
         self.pv_current = None                        # (250/100, 250/70) Amps
-        self.pv_energy_yield_today = None             # (total, 250/100, 250/70) kWh
-        self.pv_dc_current = None                     # (total, 250/100, 250/70) Amps
         self.pv_opmode = None                         # Off, Active, Limited, Unknown
-        self.pv_efficiency = None                     # (total, 250/100, 250/70) %
-        self.pv_net_efficiency = None                 # %
-        self.pv_power_lost = None                     # (total, 250/100, 250/70) Watts
 
         # ----- Battery -----
+        self.battery_soc = None                       # (% shunt, % bms)
         self.battery_voltage = None                   # (Shunt, BMS) Volts
+        self.battery_cell_voltages = None             # (min, max) Volts
+        self.battery_temperature = None               # deg C
+        self.battery_blocking = None                  # (# of modules, # of charge block, # of discharge block)
         self.battery_charge_current = None            # Amps
         self.battery_power = None                     # Watts
-        self.battery_shunt_soc = None                 # %
-        self.battery_soc = None                       # (% shunt, % bms)
-        self.battery_temperature = None               # deg C
-        self.battery_cell_voltages = None             # (min, max) Volts
         self.battery_power_lost = None                # Watts
-        self.battery_blocking = None                  # (# of modules, # of charge block, # of discharge block)
 
         # ----- Chargeverter -----
         self.chargeverter_power = None                # Watts
@@ -140,6 +144,7 @@ class ESS:
 
     async def connect(self):
         # Connects to the Cerbo GX attached devices
+
         await self.gx.connect()           # Victron Cerbo GX
         await self.system.connect()       # System Parameters on Cerbo GX
         await self.grid.connect()         # Carlo Gavazzi EM530
@@ -156,15 +161,35 @@ class ESS:
         # Create the log file
         self.create_log_file()
 
+    async def disconnect(self):
+        # Disconnects from the Cerbo GX attached devices
+
+        await self.gx.disconnect()  # Victron Cerbo GX
+        await self.system.disconnect()  # System Parameters on Cerbo GX
+        await self.grid.disconnect()  # Carlo Gavazzi EM530
+        await self.quattro.disconnect()  # 2x Victron Quattro 48|5000|70-100|100 120V Split-Phase
+        await self.battery.disconnect()  # 3x EG4-LL v1 modules in parallel, CANbus BMS
+        await self.main_shunt.disconnect()  # SmartShunt used as battery monitor, VE.Direct
+        await self.cv_shunt.disconnect()  # SmartShunt used as Chargeverter power monitor, VE.Direct
+        await self.all_mppt.disconnect()  # SmartSolar VE.Can MPPT 250/70 and 250/100
+        await self.rack_temp.disconnect()  # Rack Temperature Sensor
+        await self.cv_temp.disconnect()  # Chargeverter Temperature Sensor
+        await self.addition.disconnect()  # Addition Energy Meter
+        await self.house.disconnect()  # House Energy Meter
+
     def create_log_file(self, logfile='ess.log'):
-        # Close any existing file, restart writing a new one (change of day)
+        # Close any existing file, triggering writing a new one (change of day)
         if self.log_file:
             self.log_file.file.close()
             self.log_file.file = None
 
         # Create the log file
-        self.log_file = tab_delimited_log.TabDelimitedLogWriter(logfile)
-        self.log_file.create_or_update_file()
+        self.log_file = ESSLogWriter(logfile)
+        if self.log_file.create_or_update_file():
+            self.ess_stats.clear()    # clear statistics if a new file was just created
+
+        # Read statistics from existing log file
+        self.get_statistics_from_existing_logfile(logfile)
 
         # Save the Starting Date to know when to archive at end of day
         ts = datetime.now()
@@ -239,70 +264,71 @@ class ESS:
         # Writes the current values to the log file if it is open
         if self.log_file is None:
             return
+        lf = self.log_file
 
         # ----- Grid -----
-        self.log_file.add_power_values('Grid Power (W)', self.grid_power)
-        self.log_file.add_power_values('Grid House Power (W)', self.grid_house_power)
-        self.log_file.add_power_values('Grid Addition Power (W)', self.grid_addition_power)
-        self.log_file.add_row_value('Grid Voltage', self.grid_voltage[0])
-        self.log_file.add_row_value('L1 Grid Voltage', self.grid_voltage[1])
-        self.log_file.add_row_value('L2 Grid Voltage', self.grid_voltage[2])
-        self.log_file.add_row_value('L1 Grid Power Factor', self.grid_power_factor[0])
-        self.log_file.add_row_value('L2 Grid Power Factor', self.grid_power_factor[1])
-        self.log_file.add_row_value('Grid Frequency (Hz)', self.grid_frequency)
+        lf.set_power_values('Grid Power (W)', self.grid_power)
+        lf.set_power_values('Grid House Power (W)', self.grid_house_power)
+        lf.set_power_values('Grid Addition Power (W)', self.grid_addition_power)
+        lf.set_row_value('Grid Voltage', self.grid_voltage[0])
+        lf.set_row_value('L1 Grid Voltage', self.grid_voltage[1])
+        lf.set_row_value('L2 Grid Voltage', self.grid_voltage[2])
+        lf.set_row_value('L1 Grid Power Factor', self.grid_power_factor[0])
+        lf.set_row_value('L2 Grid Power Factor', self.grid_power_factor[1])
+        lf.set_row_value('Grid Frequency (Hz)', self.grid_frequency)
 
         # ----- Inverter -----
-        self.log_file.add_power_values('Total Inverter Power (W)', self.inverter_ac_total_power)
-        self.log_file.add_power_values('Inverter Input Power (W)', self.inverter_ac_input_power)
-        self.log_file.add_power_values('Inverter Output Power (W)', self.inverter_ac_output_power)
-        self.log_file.add_pf_values('Inverter Input Power Factor', self.inverter_input_power_factor)
-        self.log_file.add_pf_values('Inverter Output Power Factor', self.inverter_output_power_factor)
-        self.log_file.add_row_value('ESS Power Limit (W)', self.inverter_ess_power_limit)
-        self.log_file.add_row_value('Inverter Efficiency (%)', self.inverter_efficiency[1])
-        self.log_file.add_row_value('Inverter State', self.inverter_state)
-        self.log_file.add_row_value('Active Warnings and Alarms', self.inverter_warnings_alarms)
-        self.log_file.add_row_value('Inverter Temperature (°C)', self.inverter_rack_temperature)
+        lf.set_power_values('Total Inverter Power (W)', self.inverter_ac_total_power)
+        lf.set_power_values('Inverter Input Power (W)', self.inverter_ac_input_power)
+        lf.set_power_values('Inverter Output Power (W)', self.inverter_ac_output_power)
+        lf.set_pf_values('Inverter Input Power Factor', self.inverter_input_power_factor)
+        lf.set_pf_values('Inverter Output Power Factor', self.inverter_output_power_factor)
+        lf.set_row_value('ESS Power Limit (W)', self.inverter_ess_power_limit)
+        lf.set_row_value('Inverter Efficiency (%)', self.inverter_efficiency[1])
+        lf.set_row_value('Inverter State', self.inverter_state)
+        lf.set_row_value('Active Warnings and Alarms', self.inverter_warnings_alarms)
+        lf.set_row_value('Inverter Temperature (°C)', self.inverter_rack_temperature)
 
         # ----- AC Consumption -----
-        self.log_file.add_power_values('Total AC Consumption (W)', self.ac_consumption)
-        self.log_file.add_power_values('AC Critical Loads (W)', self.ac_critical_load_consumption)
-        self.log_file.add_power_values('AC House Consumption (W)', self.ac_house_consumption)
-        self.log_file.add_power_values('AC Addition Consumption (W)', self.ac_addition_consumption)
-        self.log_file.add_power_values('AC Battery Chargers (W)', self.ac_battery_charger_consumption)
+        lf.set_power_values('Total AC Consumption (W)', self.ac_consumption)
+        lf.set_power_values('AC Critical Loads (W)', self.ac_critical_load_consumption)
+        lf.set_power_values('AC House Consumption (W)', self.ac_house_consumption)
+        lf.set_power_values('AC Addition Consumption (W)', self.ac_addition_consumption)
+        lf.set_power_values('AC Battery Chargers (W)', self.ac_battery_charger_consumption)
 
         # ----- PV Solar -----
-        self.log_file.add_pv_values('PV Power (W)', self.pv_power)
-        self.log_file.add_pv_values('PV DC Current (A)', self.pv_dc_current)
-        self.log_file.add_pv_values('PV Yield Today (kWh)', self.pv_energy_yield_today)
-        self.log_file.add_pv_values('PV Efficiency (%)', self.pv_efficiency)
-        self.log_file.add_pv_values('PV Power Lost (W)', self.pv_power_lost)
-        self.log_file.add_row_value('PV Net Efficiency (%)', self.pv_net_efficiency)
-        self.log_file.add_2pv_values('PV Voltage (V)', self.pv_voltage)
-        self.log_file.add_2pv_values('PV Current (A)', self.pv_current)
-        self.log_file.add_2pv_values('PV MPPT Mode', self.pv_opmode)
+        lf.set_pv_values('PV Power (W)', self.pv_power)
+        lf.set_pv_values('PV DC Current (A)', self.pv_dc_current)
+        lf.set_pv_values('PV Yield Today (kWh)', self.pv_energy_yield_today)
+        lf.set_pv_values('PV Efficiency (%)', self.pv_efficiency)
+        lf.set_pv_values('PV Power Lost (W)', self.pv_power_lost)
+        lf.set_row_value('PV Net Efficiency (%)', self.pv_net_efficiency)
+        lf.set_2pv_values('PV Voltage (V)', self.pv_voltage)
+        lf.set_2pv_values('PV Current (A)', self.pv_current)
+        lf.set_2pv_values('PV MPPT Mode', self.pv_opmode)
 
         # ----- Battery -----
-        self.log_file.add_row_value('Shunt SoC (%)', self.battery_soc[0])
-        self.log_file.add_row_value('BMS SoC (%)', self.battery_soc[1])
-        self.log_file.add_row_value('Shunt Voltage (V)', self.battery_voltage[0])
-        self.log_file.add_row_value('BMS Voltage (V)', self.battery_voltage[1])
-        self.log_file.add_row_value('Min Cell Voltage (V)', self.battery_cell_voltages[0])
-        self.log_file.add_row_value('Max Cell Voltage (V)', self.battery_cell_voltages[1])
-        self.log_file.add_row_value('Battery Temperature (°C)', self.battery_temperature)
-        self.log_file.add_row_value('Battery Status', self.battery_blocking)
-        self.log_file.add_row_value('Shunt Charge Current (A)', self.battery_charge_current)
-        self.log_file.add_row_value('Shunt Power (W)', self.battery_power)
-        self.log_file.add_row_value('Battery Cable Power Loss (W)', self.battery_power_lost)
+        lf.set_row_value('Shunt SoC (%)', self.battery_soc[0])
+        lf.set_row_value('BMS SoC (%)', self.battery_soc[1])
+        lf.set_row_value('Shunt Voltage (V)', self.battery_voltage[0])
+        lf.set_row_value('BMS Voltage (V)', self.battery_voltage[1])
+        lf.set_row_value('Min Cell Voltage (V)', self.battery_cell_voltages[0])
+        lf.set_row_value('Max Cell Voltage (V)', self.battery_cell_voltages[1])
+        lf.set_row_value('Battery Temperature (°C)', self.battery_temperature)
+        lf.set_row_value('Battery Status', self.battery_blocking)
+        lf.set_row_value('Shunt Charge Current (A)', self.battery_charge_current)
+        lf.set_row_value('Shunt Power (W)', self.battery_power)
+        lf.set_row_value('Battery Cable Power Loss (W)', self.battery_power_lost)
 
         # ----- Chargeverter -----
-        self.log_file.add_row_value('Chargeverter Power (W)', self.chargeverter_power)
-        self.log_file.add_row_value('Chargeverter Current (A)', self.chargeverter_current)
-        self.log_file.add_row_value('Chargeverter Temperature (°C)', self.chargeverter_temp)
+        lf.set_row_value('Chargeverter Power (W)', self.chargeverter_power)
+        lf.set_row_value('Chargeverter Current (A)', self.chargeverter_current)
+        lf.set_row_value('Chargeverter Temperature (°C)', self.chargeverter_temp)
 
         # Write the line to the log file
-        self.log_file.log_row()
+        lf.log_row()
 
-    async def gather_info(self):
+    async def gather_cerbo_info(self):
         # Gathers the info from the Cerbo GX attached devices and writes to the log file
         # This is typically called every second.
         #
@@ -373,14 +399,12 @@ class ESS:
             self.pv_efficiency[0] * self.inverter_efficiency[1] / 100.0
 
         # ----- Battery -----
-        self.battery_power, shunt_v, self.battery_charge_current, \
-            self.battery_shunt_soc = await self.main_shunt.dc_info()
+        self.battery_power, shunt_v, self.battery_charge_current, shunt_soc = await self.main_shunt.dc_info()
+        soc = await self.battery.state_of_charge()
+        self.battery_soc = (shunt_soc, soc)  # Both SoCs in a tuple
 
         batt_v = await self.battery.voltage()
         self.battery_voltage = (shunt_v, batt_v)  # Both voltages
-
-        soc = await self.battery.state_of_charge()
-        self.battery_soc = (self.battery_shunt_soc, soc)  # Both SoCs
 
         self.battery_temperature = await self.battery.degrees_c()
         self.battery_cell_voltages = await self.battery.cell_voltages()
@@ -396,7 +420,7 @@ class ESS:
             msg = f'{block[1]}/{block[0]}  {block[2]}/{block[0]}'
         self.battery_blocking = msg
 
-        # PV Solar power losst in cables (calculations needing the shunt info)
+        # PV Solar power lost in cables (calculations needing the shunt info)
         self.pv_power_lost = [0, 0, 0]
         self.pv_power_lost[1] = round(abs(dc_v[0] - shunt_v) * self.pv_dc_current[1])
         self.pv_power_lost[2] = round(abs(dc_v[1] - shunt_v) * self.pv_dc_current[2])
@@ -409,7 +433,7 @@ class ESS:
         # Update the log tab-delimited log file
         self.update_log_file()
 
-    def playback_update(self):
+    def gather_playback_info(self):
         # Reads the current values from the playback log file if it is open
         # Returns 1 if at end of file, 0 otherwise
         if self.playback_reader is None:
@@ -496,6 +520,98 @@ class ESS:
 
         return 0
 
+    def get_statistics_from_existing_logfile(self, logfile, stop_time=None):
+        # Reads the entire logfile, updating the statistics objects for columns of interest
+
+        print(f'# Reading existing log file {logfile} to gather statistics...')
+        rlf = ESSLogReader(logfile)
+        rlf.open_file()
+
+        stop_tick = 0
+        if stop_time:
+            stop_hms = stop_time.split(':')
+            stop_tick = stop_hms[0] * 3600 + stop_hms[1] * 60 + stop_hms[2]
+
+        while not rlf.read_next_row():
+
+            # Check the time
+            if stop_time:
+                ts = rlf.get_string_value('Timestamp').split(' ')
+                hms = ts.split(':')
+                tick = hms[0] * 3600 + hms[1] * 60 + hms[2]
+
+                if tick > stop_tick:
+                    break
+
+            # ----- Grid -----
+            self.ess_stats.next_grid((rlf.get_float_value(self.ess_stats.grid_power.name),
+                                      rlf.get_float_value(self.ess_stats.grid_house_power.name),
+                                      rlf.get_float_value(self.ess_stats.grid_addition_power.name),
+                                      rlf.get_float_value(self.ess_stats.grid_voltage.name),
+                                      rlf.get_float_value(self.ess_stats.grid_frequency.name)))
+
+            # ----- Inverter -----
+            self.ess_stats.next_inverter((rlf.get_float_value(self.ess_stats.inverter_ac_total_power.name),
+                                          rlf.get_float_value(self.ess_stats.inverter_ac_input_power.name),
+                                          rlf.get_float_value(self.ess_stats.inverter_ac_output_power.name),
+                                          rlf.get_float_value(self.ess_stats.inverter_rack_temperature.name)))
+
+            # ----- AC Consumption -----
+            self.ess_stats.next_ac_consumption(
+                (rlf.get_float_value(self.ess_stats.ac_consumption.name),
+                 rlf.get_float_value(self.ess_stats.ac_critical_load_consumption.name),
+                 rlf.get_float_value(self.ess_stats.ac_house_consumption.name),
+                 rlf.get_float_value(self.ess_stats.ac_addition_consumption.name),
+                 rlf.get_float_value(self.ess_stats.ac_battery_charger_consumption.name)))
+
+            # ----- PV Solar -----
+            self.ess_stats.next_pv_solar((rlf.get_float_value(self.ess_stats.pv_power.name),
+                                          rlf.get_float_value(self.ess_stats.pv_dc_current.name),
+                                          rlf.get_float_value(self.ess_stats.pv_voltage_250_70.name),
+                                          rlf.get_float_value(self.ess_stats.pv_voltage_250_100.name)))
+
+            # ----- Battery -----
+            self.ess_stats.next_battery((rlf.get_float_value(self.ess_stats.battery_soc.name),
+                                         rlf.get_float_value(self.ess_stats.battery_voltage.name),
+                                         rlf.get_float_value(self.ess_stats.battery_temperature.name),
+                                         rlf.get_float_value(self.ess_stats.battery_charge_current.name)))
+
+        rlf.file.close()
+
+    def update_statistics(self):
+        # Updates the statistics (min, mean, max)
+        # Should be called after playback_update() or gather_cerbo_info()
+
+        # ----- Grid -----
+        self.ess_stats.next_grid((self.grid_power[0],
+                                  self.grid_house_power[0],
+                                  self.grid_addition_power[0],
+                                  self.grid_voltage[0],
+                                  self.grid_frequency))
+
+        # ----- Inverter -----
+        self.ess_stats.next_inverter((self.inverter_ac_total_power[0],
+                                      self.inverter_ac_input_power[0],
+                                      self.inverter_ac_output_power[0],
+                                      self.inverter_rack_temperature))
+
+        # ----- AC Consumption -----
+        self.ess_stats.next_ac_consumption((self.ac_consumption[0],
+                                            self.ac_critical_load_consumption[0],
+                                            self.ac_house_consumption[0],
+                                            self.ac_addition_consumption[0],
+                                            self.ac_battery_charger_consumption[0]))
+
+        # ----- PV Solar -----
+        self.ess_stats.next_pv_solar((self.pv_power[0], self.pv_dc_current[0],
+                                      self.pv_voltage[0], self.pv_voltage[1]))
+
+        # ----- Battery -----
+        self.ess_stats.next_battery((self.battery_soc[0],
+                                     self.battery_voltage[0],
+                                     self.battery_temperature,
+                                     self.battery_charge_current))
+
     def update_display(self):
         # Updates the color status display using the gathered information from the Cerbo or the playback file
 
@@ -527,6 +643,17 @@ class ESS:
 
         d.set_float_value('Grid', 'Grid Frequency:', 'Total', self.grid_frequency, fmt='.2f', units='Hz',
                           color=d.range_two_color(self.grid_frequency, 59.70, 60.30, out_color=self.RED))
+
+        d.set_value('Grid', 'Grid Power:', 'Min Mean Max',
+                    self.ess_stats.grid_power.min_mean_max_string(units='W'))
+        d.set_value('Grid', 'Grid House Power:', 'Min Mean Max',
+                    self.ess_stats.grid_house_power.min_mean_max_string(units='W'))
+        d.set_value('Grid', 'Grid Addition Power:', 'Min Mean Max',
+                    self.ess_stats.grid_addition_power.min_mean_max_string(units='W'))
+        d.set_value('Grid', 'Grid Voltage:', 'Min Mean Max',
+                    self.ess_stats.grid_voltage.min_mean_max_string(fmt='6.1f', units='V'))
+        d.set_value('Grid', 'Grid Frequency:', 'Min Mean Max',
+                    self.ess_stats.grid_frequency.min_mean_max_string(fmt='6.2f', units='Hz'))
 
         # ----- Inverter -----
         d.set_3_float_values('Inverter', 'Inverter Power (Total):', self.inverter_ac_total_power,
@@ -565,6 +692,15 @@ class ESS:
                           fmt='.1f', units='°C', color=d.range_three_color(self.inverter_rack_temperature,
                                                                            5.0, 40.0, 40.0, 50.0))
 
+        d.set_value('Inverter', 'Inverter Power (Total):', 'Min Mean Max',
+                    self.ess_stats.inverter_ac_total_power.min_mean_max_string(units='W'))
+        d.set_value('Inverter', 'Inverter Input Power:', 'Min Mean Max',
+                    self.ess_stats.inverter_ac_input_power.min_mean_max_string(units='W'))
+        d.set_value('Inverter', 'Inverter Output Power:', 'Min Mean Max',
+                    self.ess_stats.inverter_ac_output_power.min_mean_max_string(units='W'))
+        d.set_value('Inverter', 'Inverter Temperature:', 'Min Mean Max',
+                    self.ess_stats.inverter_rack_temperature.min_mean_max_string(fmt='6.1f', units='°C'))
+
         # ----- AC Consumption -----
         d.set_3_float_values('AC Consumption', 'AC Consumption (Total):', self.ac_consumption,
                              colors=d.pos_neg_color_v(self.ac_consumption))
@@ -580,6 +716,17 @@ class ESS:
 
         d.set_3_float_values('AC Consumption', 'AC Battery Chargers:', self.ac_battery_charger_consumption,
                              colors=d.pos_neg_color_v(self.ac_battery_charger_consumption))
+
+        d.set_value('AC Consumption', 'AC Consumption (Total):', 'Min Mean Max',
+                    self.ess_stats.ac_consumption.min_mean_max_string(units='W'))
+        d.set_value('AC Consumption', 'AC Critical Loads:', 'Min Mean Max',
+                    self.ess_stats.ac_critical_load_consumption.min_mean_max_string(units='W'))
+        d.set_value('AC Consumption', 'AC House Consumption:', 'Min Mean Max',
+                    self.ess_stats.ac_house_consumption.min_mean_max_string(units='W'))
+        d.set_value('AC Consumption', 'AC Addition Consumption:', 'Min Mean Max',
+                    self.ess_stats.ac_addition_consumption.min_mean_max_string(units='W'))
+        d.set_value('AC Consumption', 'AC Battery Chargers:', 'Min Mean Max',
+                    self.ess_stats.ac_battery_charger_consumption.min_mean_max_string(units='W'))
 
         # ----- PV Solar -----
         d.set_3pv_float_values('PV Solar', 'PV Power:', self.pv_power, fmt='.1f', units='W',
@@ -615,6 +762,16 @@ class ESS:
         d.set_value('PV Solar', 'PV MPPT Modes:', '250/100', self.pv_opmode[1] + '  ',
                     color=self.GREEN if self.pv_opmode[1] == 'Active' else self.RED)
 
+        d.set_value('PV Solar', 'PV Power:', 'Maximum',
+                    self.ess_stats.pv_power.max_string(units='W'))
+        d.set_value('PV Solar', 'PV DC Current:', 'Maximum',
+                    self.ess_stats.pv_dc_current.max_string(fmt='6.1f', units='A'))
+
+        pv_voltage_250_70 = self.ess_stats.pv_voltage_250_70.max_string(fmt='6.1f', units='V')
+        pv_voltage_250_100 = self.ess_stats.pv_voltage_250_100.max_string(fmt='6.1f', units='V')
+        max_pv_string = f'[{pv_voltage_250_70}  {pv_voltage_250_100}]'
+        d.set_value('PV Solar', 'PV Voltage:', 'Maximum', max_pv_string)
+
         # ----- Battery -----
         d.set_2batt_float_values('Battery', 'Battery SoC:', self.battery_soc, fmt='.1f', units='%',
                                  colors=d.range_three_color_v(self.battery_soc, 20.0, 95.0, 95.0, 99.0))
@@ -646,6 +803,15 @@ class ESS:
         d.set_float_value('Battery', 'Battery Cable Power Loss:', 'Shunt', self.battery_power_lost,
                           fmt='.0f', units='W', color=d.range_three_color(self.battery_power_lost, 0, 10, 10, 50))
 
+        d.set_value('Battery', 'Battery SoC:', 'Min Mean Max',
+                    self.ess_stats.battery_soc.min_mean_max_string(fmt='6.1f', units='%'))
+        d.set_value('Battery', 'Battery Voltage:', 'Min Mean Max',
+                    self.ess_stats.battery_voltage.min_mean_max_string(fmt='6.2f', units='V'))
+        d.set_value('Battery', 'Battery Temperature:', 'Min Mean Max',
+                    self.ess_stats.battery_temperature.min_mean_max_string(fmt='6.1f', units='°C'))
+        d.set_value('Battery', 'Battery Charge Current:', 'Min Mean Max',
+                    self.ess_stats.battery_charge_current.min_mean_max_string(fmt='6.1f', units='A'))
+
         # ----- Chargeverter -----
         d.set_float_value('Chargeverter', 'Chargeverter Power:', 'Value', self.chargeverter_power,
                           fmt='.0f', units='W', color=d.range_three_color(self.chargeverter_power, 0, 3000, 3000, 5000))
@@ -657,39 +823,61 @@ class ESS:
         d.set_float_value('Chargeverter', 'Chargeverter Temperature:', 'Value', self.chargeverter_temp,
                           fmt='.1f', units='°C', color=d.range_three_color(self.chargeverter_temp,
                                                                            5.0, 40.0, 40.0, 50.0))
+
         # Update the display
         self.display.update()
 
-    async def playback_display(self):
-        # Creates the ESS display and updates the info from the playback file
-        self.display = color_status_display.ESSColorStatusDisplay()
-        self.display.setup()
-        while True:
-            if self.playback_update():   # Get all the values from the playback log file
-                break
-            self.update_display()
-            time.sleep(0.1)    # Playback rate
-
     async def status_display(self):
         # Creates the ESS display and updates the info every second
-        self.display = color_status_display.ESSColorStatusDisplay()
+        self.display = ESSColorStatusDisplay()
         self.display.setup()
-        while True:
-            await self.gather_info()  # Get all the values from the Cerbo GX devices
-            self.update_display()
-            time.sleep(1.0)           # Display and log file update rate
 
-    async def main(self, playback_log_file=None):
+        while True:
+            await self.gather_cerbo_info()  # Get all the values from the Cerbo GX attached devices
+            self.update_statistics()
+            self.update_display()
+            time.sleep(1.0)                 # Display and log file update rate
+
+    async def playback_display(self, decimation=0):
+        # Creates the ESS display and updates the info from the playback file at an accelerated rate
+        self.display = ESSColorStatusDisplay()
+        self.display.setup()
+
+        while True:
+            if self.gather_playback_info():   # Get all the values from the playback log file
+                break
+            self.update_statistics()
+            self.update_display()
+
+            if decimation:
+                for i in range(decimation-1):
+                    if self.playback_reader.read_next_row():
+                        break
+            time.sleep(0.1)                   # Playback update rate
+
+    async def main(self, playback_log_file=None, decimation=0):
         # Playback an existing logfile, showing status until terminated
         if playback_log_file:
-            self.playback_reader = tab_delimited_log.TabDelimitedLogReader(playback_log_file)
+            self.playback_reader = ESSLogReader(playback_log_file)
             self.playback_reader.open_file()
-            await self.playback_display()
+            await self.playback_display(decimation)
 
         # Connect to Cerbo GX and update the status display until terminated
         else:
-            await self.connect()
-            await self.status_display()
+            while True:
+                try:
+                    await self.connect()
+                    await self.status_display()
+
+                except (ConnectionResetError, TimeoutError, ModbusTCPClient.Disconnected):
+                    print('# Disconnected from ModbusTCP server')
+                    await self.disconnect()
+
+                    print('# Retrying...')
+                    time.sleep(30.0)
+
+                except KeyboardInterrupt:
+                    return
 
 
 if __name__ == "__main__":
@@ -698,8 +886,12 @@ if __name__ == "__main__":
     # Otherwise connects and provides real-time display and logging
 
     playback_file = None
+    playback_decimation = 0
+
     if len(sys.argv) >= 2:
         playback_file = sys.argv[1]
+    if len(sys.argv) >= 3:
+        playback_decimation = int(sys.argv[2])
 
     ess = ESS()
-    asyncio.run(ess.main(playback_file))
+    asyncio.run(ess.main(playback_file, playback_decimation))

@@ -29,7 +29,6 @@
 import time
 import asyncio
 
-import settings_gx
 from cerbo_gx import *
 
 
@@ -38,60 +37,68 @@ class GridMeter(CerboGX):
         super().__init__(addr, uid=settings_gx.GRID_METER)
 
     async def power_watts(self):
-        # Returns measured grid power (Total, L1, L2)
+        # Returns measured grid power (Total, L1, L2, L3)
         # /Ac/L1/Power (2600)
         # /Ac/L2/Power (2601)
+        # /Ac/L3/Power (2602)
 
         try:
-            result = await self.read(2600, 2)
+            result = await self.read(2600, 3)
         except self.errors:
-            return 0, 0, 0
+            return 0, 0, 0, 0
 
         l1 = self.make_signed(result[0])
         l2 = self.make_signed(result[1])
-        return (l1+l2), l1, l2
+        l3 = self.make_signed(result[2])
+        return (l1+l2+l3), l1, l2, l3
 
     async def power_factor(self):
-        # Returns measured grid power factor (L1, L2)
+        # Returns measured grid power factor (L1, L2, L3)
         # /Ac/L1/PowerFactor (2645)
         # /Ac/L2/PowerFactor (2646)
+        # /Ac/L3/PowerFactor (2647)
 
         try:
-            result = await self.read(2645, 2)
+            result = await self.read(2645, 3)
         except self.errors:
-            return 0, 0, 0
+            return 0, 0, 0, 0
 
         l1 = 0.001 * self.make_signed(result[0])
         l2 = 0.001 * self.make_signed(result[1])
-        return l1, l2
+        l3 = 0.001 * self.make_signed(result[2])
+        return l1, l2, l3
 
     async def voltage(self):
-        # Returns measured grid voltage (Mean, L1, L2)
+        # Returns measured grid voltage (Split Phase Total, L1, L2, L3)
         # /Ac/L1/Voltage (2616)
         # /Ac/L2/Voltage (2618)
+        # /Ac/L3/Voltage (2620)
 
         try:
-            result = await self.read(2616, 3)
+            result = await self.read(2616, 5)
         except self.errors:
-            return 0, 0, 0
+            return 0, 0, 0, 0
 
         l1_volts = 0.1 * self.make_signed(result[0])
         l2_volts = 0.1 * self.make_signed(result[2])
-        return (l1_volts+l2_volts), l1_volts, l2_volts
+        l3_volts = 0.1 * self.make_signed(result[4])
+        return (l1_volts + l2_volts), l1_volts, l2_volts, l3_volts
 
     async def current_amps(self):
-        # Returns measured grid current (Total, L1, L2)
+        # Returns measured grid current (Total, L1, L2, L3)
         # /Ac/L1/Current (2617)
-        # /Ac/L2/Currenr (2619)
+        # /Ac/L2/Current (2619)
+        # /Ac/L3/Current (2621)
 
         try:
-            result = await self.read(2617, 3)
+            result = await self.read(2617, 5)
         except self.errors:
-            return 0, 0, 0
+            return 0, 0, 0, 0
 
         l1_amps = 0.1 * self.make_signed(result[0])
         l2_amps = 0.1 * self.make_signed(result[2])
-        return (l1_amps+l2_amps), l1_amps, l2_amps
+        l3_amps = 0.1 * self.make_signed(result[4])
+        return (l1_amps + l2_amps + l3_amps), l1_amps, l2_amps, l3_amps
 
     async def frequency_hz(self):
         # Returns measured grid frequency (Hz)

@@ -45,6 +45,10 @@ class CerboGX:
         # Connects to the Cerbo GX
         return await self.client.connect(self.ip_address)
 
+    async def disconnect(self):
+        # Disconnects from the Cerbo GX
+        await self.client.close()
+
     async def read(self, reg, num):
         # Reads 16-bit unsigned modbus registers
         return await self.client.read_registers(reg, num)

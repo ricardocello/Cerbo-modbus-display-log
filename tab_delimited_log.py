@@ -1,6 +1,6 @@
 # -------------------------------------------------------------------------------------------------------------------
 # Implements a class to read and write tab-delimited columnar log files conveniently.
-# This is generically useful, although some convenience functions specific to ricardocello are present as well.
+# This is a generically useful class.
 # -------------------------------------------------------------------------------------------------------------------
 # Copyright 2023 ricardocello
 # MIT License
@@ -27,15 +27,18 @@ import shutil
 
 
 class Column:
-    # Represents a column in the log file.
-    # The format should be in format_string format, e.g. :6.2f
+    # Represents a column in the log file for both writing and reading.
+    # The format should be in format_string format, e.g. 6.2f
     # By default, for writing files, the format is a string.
+    #
     # The format specification is not used when reading files.
+    # When reading, it is possible to save columnar values for later analysis.
 
     def __init__(self, name, fmt=''):
         self.name = name
         self.format = fmt
-        self.value = None
+        self.value = None          # current value
+        self.saved_values = None   # a list of saved values for Reader only, populated only when this is a list
 
     def value_string(self):
         # Returns a string representing the current value in the desired format
@@ -43,7 +46,11 @@ class Column:
         if self.value is None:
             return ''
         fmt_str = '{' + f'{self.format}' + '}'
+        # print('<Debug> ', self.name, self.format, self.value, fmt_str)
         return fmt_str.format(self.value)
+
+    def save_values(self):
+        self.saved_values = []  # marks the column so that values will be saved here
 
 
 class TabDelimitedLogWriter:
@@ -54,27 +61,39 @@ class TabDelimitedLogWriter:
         self.filename = filename
         self.file = None
         self.columns = {}
+        self.line_count = 0
+
+    def create_file(self, append=False):
+        self.file = open(self.filename, 'a' if append else 'w')
+
+    def close(self):
+        self.file.close()
+        self.file = None
 
     def create_or_update_file(self):
-        # Read the existing log file starting date and time; if nothing in file, create a new file
-        dt = self.current_file_start_date_time()
+        # Read the existing log file starting date and time; if nothing in file, create a new file.
+        # Returns 1 if a new file is created, 0 if not.
+
+        dt = self.file_start_date_time(self.filename)
         if dt is None:
             print(f'# Creating new log file {self.filename}')
             self.file = open(self.filename, 'w')
-            return
-        (log_date, log_time) = dt
+            return 1
 
         # Check the current date; if it matches the log file, just append to existing log file
+        (log_date, log_time) = dt
         ts = datetime.now()
         current_date = ts.strftime('%Y-%m-%d')
+
         if log_date == current_date:
             print(f'# Appending to existing log file {self.filename}')
             self.file = open(self.filename, 'a')
-            return
+            return 0
 
-        # Compress the existing log file with its starting date and time in the filename
+        # It is a new day, so compress the existing log file with its starting date and time in the filename
         gzip_filename = f'Log_{log_date}_{log_time}.gz'
         print(f'# Archiving and compressing existing log file {self.filename} as {gzip_filename}...')
+
         with open(self.filename, 'rb') as f_in:
             with gzip.open(gzip_filename, 'wb') as f_out:
                 shutil.copyfileobj(f_in, f_out)
@@ -82,13 +101,15 @@ class TabDelimitedLogWriter:
         # Create a new log file, overwriting the old one which has just been archived
         print(f'# Creating new log file {self.filename}')
         self.file = open(self.filename, 'w')
+        return 1
 
-    def current_file_start_date_time(self):
+    @staticmethod
+    def file_start_date_time(filename):
         # Returns the starting date and time of the log file by reading the first row of data.
         # Returns None if it cannot read the file or the file contains no date or time information.
         words = None
         try:
-            with open(self.filename, 'r') as f:
+            with open(filename, 'r') as f:
                 try:
                     f.readline()   # skip header
                     first_row = f.readline()
@@ -107,72 +128,19 @@ class TabDelimitedLogWriter:
     def add_timestamp_column(self):
         self.columns['Timestamp'] = Column('Timestamp')
 
-    def add_power_columns(self, name, fmt=':.0f'):
-        l1 = 'L1 ' + name
-        l2 = 'L2 ' + name
-        self.columns[name] = Column(name, fmt)
-        self.columns[l1] = Column(l1, fmt)
-        self.columns[l2] = Column(l2, fmt)
-
-    def add_pf_columns(self, name, fmt=':.2f'):
-        l1 = 'L1 ' + name
-        l2 = 'L2 ' + name
-        self.columns[name] = Column(name, fmt)
-        self.columns[l1] = Column(l1, fmt)
-        self.columns[l2] = Column(l2, fmt)
-
-    def add_pv_columns(self, name, fmt=':.1f'):
-        mppt_250_70 = '250/70 ' + name
-        mppt_250_100 = '250/100 ' + name
-        self.columns[name] = Column(name, fmt)
-        self.columns[mppt_250_70] = Column(mppt_250_70, fmt)
-        self.columns[mppt_250_100] = Column(mppt_250_100, fmt)
-
-    def add_2pv_columns(self, name, fmt=':.1f'):
-        mppt_250_70 = '250/70 ' + name
-        mppt_250_100 = '250/100 ' + name
-        self.columns[mppt_250_70] = Column(mppt_250_70, fmt)
-        self.columns[mppt_250_100] = Column(mppt_250_100, fmt)
-
     def log_header(self):
         for name in self.columns:
             self.file.write(f'{name}\t')
         self.file.write('\n')
+        self.line_count += 1
         self.file.flush()
 
-    def add_row_value(self, name, value):
+    def set_row_value(self, name, value):
         self.columns[name].value = value
 
-    def add_row_values(self, names, values):
+    def set_row_values(self, names, values):
         for n, v in zip(names, values):
-            self.add_row_value(n, v)
-
-    def add_power_values(self, name, values):
-        l1 = 'L1 ' + name
-        l2 = 'L2 ' + name
-        self.add_row_value(name, values[0])
-        self.add_row_value(l1, values[1])
-        self.add_row_value(l2, values[2])
-
-    def add_pf_values(self, name, values):
-        l1 = 'L1 ' + name
-        l2 = 'L2 ' + name
-        self.add_row_value(name, values[0])
-        self.add_row_value(l1, values[1])
-        self.add_row_value(l2, values[2])
-
-    def add_pv_values(self, name, values):
-        mppt_250_70 = '250/70 ' + name
-        mppt_250_100 = '250/100 ' + name
-        self.add_row_value(name, values[0])
-        self.add_row_value(mppt_250_70, values[1])
-        self.add_row_value(mppt_250_100, values[2])
-
-    def add_2pv_values(self, name, values):
-        mppt_250_70 = '250/70 ' + name
-        mppt_250_100 = '250/100 ' + name
-        self.add_row_value(mppt_250_70, values[0])
-        self.add_row_value(mppt_250_100, values[1])
+            self.set_row_value(n, v)
 
     def log_row(self):
         for name, c in self.columns.items():
@@ -183,6 +151,7 @@ class TabDelimitedLogWriter:
             else:
                 self.file.write(f'{c.value_string()}\t')
         self.file.write('\n')
+        self.line_count += 1
         self.file.flush()
 
 
@@ -194,6 +163,7 @@ class TabDelimitedLogReader:
         self.file = None
         self.columns = {}
         self.line_count = 0
+        self.reading_gzip = False
 
     def open_file(self):
         # Reads an existing file one row at a time
@@ -201,6 +171,24 @@ class TabDelimitedLogReader:
         header = self.read_next_line()
         for name in header:
             self.columns[name] = Column(name)
+
+    def open_gzip_file(self):
+        # Reads an existing gzip compressed file one row at a time
+        self.file = gzip.open(self.filename, 'rb')
+        self.reading_gzip = True
+
+        header = self.read_next_line()
+        for name in header:
+            self.columns[name] = Column(name)
+
+    def save_column(self, name, save=True):
+        # Marks the column so that it saves each value in the file as it is read
+        self.columns[name].saved_values = [] if save else None
+
+    def read_whole_file(self):
+        # Reads the whole file in; useful for saving columns for later processing
+        while not self.read_next_row():
+            print(f'Line {self.line_count}')
 
     def read_next_row(self):
         # Reads the next row and assigns values to each column
@@ -213,47 +201,49 @@ class TabDelimitedLogReader:
             if values[0] != 'Timestamp':
                 break
 
-        # print(f'Line {self.line_count}')
-        for index, c in enumerate(self.columns):
-            self.columns[c].value = values[index]
-            # print(index, c, values[index])
+        for index, cname in enumerate(self.columns):
+            c = self.columns[cname]
+            c.value = values[index]
+            if c.saved_values is not None:
+                c.saved_values.append(values[index])
+            # print(index, cname, values[index])
         return 0
 
     def get_string_value(self, name):
         # Returns the current value for the specified column as a string.
-        return self.columns[name].value
+        try:
+            return self.columns[name].value
+        except KeyError:
+            return ''
 
     def get_int_value(self, name):
         # Returns the current value for the specified column as an integer.
-        return int(self.columns[name].value)
+        try:
+            return int(self.columns[name].value)
+        except KeyError:
+            return 0
 
     def get_float_value(self, name):
         # Returns the current value for the specified column as a float.
-        return float(self.columns[name].value)
-
-    def get_power_values(self, name):
-        l1 = 'L1 ' + name
-        l2 = 'L2 ' + name
-        return int(self.columns[name].value), int(self.columns[l1].value), int(self.columns[l2].value)
-
-    def get_3float_values(self, name):
-        l1 = 'L1 ' + name
-        l2 = 'L2 ' + name
-        return float(self.columns[name].value), float(self.columns[l1].value), float(self.columns[l2].value)
-
-    def get_pv_values(self, name):
-        mppt_250_70 = '250/70 ' + name
-        mppt_250_100 = '250/100 ' + name
-        return float(self.columns[name].value), float(self.columns[mppt_250_70].value), \
-            float(self.columns[mppt_250_100].value)
-
-    def get_2pv_values(self, name):
-        mppt_250_70 = '250/70 ' + name
-        mppt_250_100 = '250/100 ' + name
-        return float(self.columns[mppt_250_70].value), float(self.columns[mppt_250_100].value)
+        try:
+            return float(self.columns[name].value)
+        except KeyError:
+            return 0.0
 
     def read_next_line(self):
         # Reads the next line from the file and splits it into a tuple
         line = self.file.readline().rstrip()
         self.line_count += 1
+        if self.reading_gzip:
+            line = line.decode('utf-8')
         return line.split('\t')
+
+
+if __name__ == "__main__":
+    # Execute main() if this file is executed directly
+
+    reader = TabDelimitedLogReader('ess.log.gz')
+    reader.open_gzip_file()
+    reader.save_column('Grid Power (W)')
+    reader.read_whole_file()
+    print(reader.columns['Grid Power (W)'].saved_values)

@@ -36,22 +36,22 @@ class Quattros(CerboGX):
     def __init__(self, addr=settings_gx.GX_IP_ADDRESS):
         super().__init__(addr, uid=settings_gx.VEBUS_INVERTERS)
 
-    async def set_input_power_setpoint(self, l1_watts, l2_watts):
-        # Sets the input power (negative values feed-in power)
+    async def set_mode_3_power_setpoint(self, l1_watts, l2_watts):
+        # Sets the power level at AC Input (negative values feed-in power)
         # /Hub4/L1/AcPowerSetpoint (37)
         # /Hub4/L2/AcPowerSetpoint (40)
 
         await self.write_int(37, int(l1_watts))
         await self.write_int(40, int(l2_watts))
 
-    async def set_charging(self, yes_no):
+    async def enable_charger(self, yes_no):
         # Enables or disables the battery charger
         # /Hub4/DisableCharge (38)
 
         await self.write_uint(38, 0 if yes_no else 1)
 
-    async def set_feed_in(self, yes_no):
-        # Enables or disables inverter power feed-in
+    async def enable_inverter(self, yes_no):
+        # Enables or disables inverter power
         # /Hub4/DisableFeedIn (39)
 
         await self.write_uint(39, 0 if yes_no else 1)
@@ -93,6 +93,20 @@ class Quattros(CerboGX):
         except self.errors:
             return 0.0
         return result / 100.0
+
+    async def ess_power_setpoint(self):
+        # Gets the power level at AC Input (negative values feed-in power)
+        # /Hub4/L1/AcPowerSetpoint (37)
+        # /Hub4/L2/AcPowerSetpoint (40)
+
+        try:
+            result = await self.read(37, 4)
+        except self.errors:
+            return 0, 0, 0
+
+        l1 = self.make_signed(result[0])
+        l2 = self.make_signed(result[3])
+        return (l1+l2), l1, l2
 
     async def all_out_power(self):
         # Returns the Quattro output power (Total, L1, L2)
@@ -271,8 +285,7 @@ class Quattros(CerboGX):
         # Returns the current inverter VE.bus state as a string
         # /State (31)
 
-        result = await self.read(31, 1)
-        state = result[0]
+        state = await self.read_uint(31)
         if state == 0:
             return 'Off'
         elif state == 1:
@@ -307,14 +320,14 @@ class Quattros(CerboGX):
         # Returns inverter power feed-in setting
         # /Hub4/DisableFeedIn (39)
 
-        result = await self.read(39, 1)
+        result = await self.read_uint(39)
         return result == 0
 
     async def is_pv_feed_in_enabled(self):
         # Returns PV power feed-in setting
         # /Hub4/DoNotFeedInOvervoltage (65)
 
-        result = await self.read(65, 1)
+        result = await self.read_uint(65)
         return result == 0
 
     async def max_feed_in_watts(self):
@@ -334,14 +347,14 @@ class Quattros(CerboGX):
         # Returns battery charger setting
         # /Hub4/DisableCharge (38)
 
-        result = await self.read(38, 1)
+        result = await self.read_uint(38)
         return result == 0
 
     async def are_setpoints_limits(self):
         # Retuns the setpoints as limit setting
         # /Hub4/TargetPowerIsMaxFeedIn (71)
 
-        result = await self.read(71, 1)
+        result = await self.read_uint(71)
         return result == 1
 
     async def ripple_volts(self):
@@ -447,8 +460,34 @@ class Quattros(CerboGX):
                   f' [Ripple {ripple[0]:.2f} {ripple[1]:.2f} V]')
             time.sleep(1.0)
 
+    async def main_test(self):
+        # Unit Test Code: Gather info from the Quattros and display it
+
+        r = await self.connect()
+        if r:
+            print(f'# Unable to connect to Cerbo GX at {self.ip_address}')
+            return
+
+        last_out_w = await q.output_power_watts()
+        last_out_va = await q.output_power_va()
+        count = 1
+
+        while True:
+            out_w = await q.output_power_watts()
+            out_va = await q.output_power_va()
+            setpoints = await q.ess_power_setpoints()
+            if out_w[0] != last_out_w[0]:
+                print(f'Count {count}')
+                count = 0
+
+            # print(f'Quattros: [Output {out_w[0]} W   {out_va[0]} VA [ESS Setpoint {setpoints[0]} W]')
+            time.sleep(0.1)
+            last_out_w = out_w
+            last_out_va = out_va
+            count += 1
+
 
 if __name__ == "__main__":
     # Execute the unit test code if this file is executed directly
     q = Quattros(addr=settings_gx.GX_IP_ADDRESS)
-    asyncio.run(q.main())
+    asyncio.run(q.main_test())

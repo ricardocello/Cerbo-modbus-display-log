@@ -47,7 +47,10 @@ class ModbusTCPClient:
         if ModbusTCPClient.DEBUG:
             print(*args, **kwargs)
 
-    class Error(Exception):
+    class Error(Exception):             # Used to indicate a ModbusTCP error
+        pass
+
+    class Disconnected(Exception):      # Used to indicate that the previous connection is gone
         pass
 
     def __init__(self, unit_id=1, read_function_code=3):
@@ -239,15 +242,31 @@ class ModbusTCPClient:
         self.set_mbap_length(7+2*count)
         cmd = struct.pack('>7BBHHB', *self.mbap, 0x10, addr, count, 2*count)
 
-        self.writer.write(cmd)
-        await self.writer.drain()
+        if self.writer is None or self.reader is None:
+            raise ModbusTCPClient.Disconnected(f'# ModbusTCP: Remote server has disconnected (no reader or writer).')
 
-        rsp = await self.reader.readexactly(8)
-        if (rsp[7] & 0x80) != 0:
-            rsp += await self.reader.readexactly(1)
-            raise ModbusTCPClient.Error(f'ModbusTCP Exception 0x{rsp[8]:x}: {rsp.hex()}')
+        try:
+            self.writer.write(cmd)
+            await self.writer.drain()
 
-        rsp += await self.reader.readexactly(4)
+            rsp = await self.reader.readexactly(8)
+            if (rsp[7] & 0x80) != 0:
+                rsp += await self.reader.readexactly(1)
+                raise ModbusTCPClient.Error(f'ModbusTCP Exception 0x{rsp[8]:x}: {rsp.hex()}')
+
+            rsp += await self.reader.readexactly(4)
+
+        except AttributeError:   # caused by reader or writer being sset to None
+            raise ModbusTCPClient.Disconnected(f'# ModbusTCP: Remote server has disconnected.')
+
+        except asyncio.IncompleteReadError:  # cause by disconnect
+            raise ModbusTCPClient.Disconnected(f'# ModbusTCP: Remote server has disconnected (incomplete read).')
+
+        except asyncio.exceptions.CancelledError:  # cause by disconnect
+            raise ModbusTCPClient.Disconnected(f'# ModbusTCP: Remote server has disconnected (canceled).')
+
+        except asyncio.exceptions.TimeoutError:  # cause by disconnect
+            raise ModbusTCPClient.Disconnected(f'# ModbusTCP: Remote server has disconnected (timeout).')
 
     # ---------------------------------------------------------------------------------------------------------------
     #  Reading Registers
@@ -332,16 +351,32 @@ class ModbusTCPClient:
         cmd = struct.pack('>7BBHH', *self.mbap, self.read_function, addr, count)
         # print(cmd.hex())
 
-        self.writer.write(cmd)
-        await self.writer.drain()
+        if self.writer is None or self.reader is None:
+            raise ModbusTCPClient.Disconnected(f'# ModbusTCP: Remote server has disconnected (no reader or writer).')
 
-        rsp = await self.reader.readexactly(8)
-        if (rsp[7] & 0x80) != 0:
-            rsp += await self.reader.readexactly(1)
-            raise ModbusTCPClient.Error(f'# ModbusTCP: ModbusTCP Exception 0x{rsp[8]:x}: {rsp.hex()}')
+        try:
+            self.writer.write(cmd)
+            await self.writer.drain()
 
-        rsp += await self.reader.readexactly(1+2*count)
-        # print(rsp.hex())
+            rsp = await self.reader.readexactly(8)
+            if (rsp[7] & 0x80) != 0:
+                rsp += await self.reader.readexactly(1)
+                raise ModbusTCPClient.Error(f'# ModbusTCP: ModbusTCP Exception 0x{rsp[8]:x}: {rsp.hex()}')
+
+            rsp += await self.reader.readexactly(1+2*count)
+            # print(rsp.hex())
+
+        except AttributeError:  # caused by reader or writer being set to None
+            raise ModbusTCPClient.Disconnected(f'# ModbusTCP: Remote server has disconnected.')
+
+        except asyncio.IncompleteReadError:  # cause by disconnect
+            raise ModbusTCPClient.Disconnected(f'# ModbusTCP: Remote server has disconnected (incomplete read).')
+
+        except asyncio.exceptions.CancelledError:  # cause by disconnect
+            raise ModbusTCPClient.Disconnected(f'# ModbusTCP: Remote server has disconnected (canceled).')
+
+        except asyncio.exceptions.TimeoutError:  # cause by disconnect
+            raise ModbusTCPClient.Disconnected(f'# ModbusTCP: Remote server has disconnected (timeout).')
 
         regs = struct.unpack(f'>{count}H', rsp[9:])
         return regs
@@ -365,7 +400,7 @@ class ModbusTCPClient:
         # Retries automatically when disconnected.
         # Continuously reads some registers and displays their values.
 
-        asyncio.create_task(self.connect_watchdog(addr))
+        await asyncio.create_task(self.connect_watchdog(addr))
 
         while True:
             while not self.is_connected():
