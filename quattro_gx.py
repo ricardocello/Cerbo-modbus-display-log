@@ -36,6 +36,23 @@ class Quattros(CerboGX):
     def __init__(self, addr=settings_gx.GX_IP_ADDRESS):
         super().__init__(addr, uid=settings_gx.VEBUS_INVERTERS)
 
+    @staticmethod
+    def estimated_efficiency(ac_power_watts):
+        # Calculates the Inverter or Charger efficiency based on AC power.
+        # This was modeled by collecting lots of data and median filtering the results.
+        # The two piecewise functions modeled on the data are a hyperbola (below 2500 W)
+        # and a straight line (above 2500 W).
+        w = abs(ac_power_watts)
+
+        if ac_power_watts < 2500.0:
+            efficiency = 93.56 - 3665.0 / (w - 21.0)    # hyperbolic fit
+        else:
+            efficiency = 94.12 - 0.00081038 * w         # linear fit
+
+        efficiency = min(efficiency, 92.0)
+        efficiency = max(efficiency, 50.0)
+        return efficiency
+
     async def set_mode_3_power_setpoint(self, l1_watts, l2_watts):
         # Sets the power level at AC Input (negative values feed-in power)
         # /Hub4/L1/AcPowerSetpoint (37)

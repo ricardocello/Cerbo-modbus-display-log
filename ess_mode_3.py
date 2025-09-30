@@ -89,7 +89,7 @@ from sun import Sun
 
 
 class State(Enum):
-    # This External Control custom ESS implementation is always in one of the following states:
+    # This External Control Mode 3 ESS implementation is always in one of the following states:
     Undefined = 0           # State is initially undefined at startup
     Mode2 = 1               # Normal ESS Mode 2 system operation (not externally controlled Mode 3)
     Idle = 2                # Inverter and charger are disabled (grid pass-thru)
@@ -115,7 +115,8 @@ class ESSMode3Control:
 
         # Inverter
         self.max_inverter_power = 8000.0    # Total for both inverters (Watts)
-        self.efficiency = 0.91              # Best typical inverter/charger efficiency
+        self.efficiency = 92.0              # Best inverter/charger efficiency (%, will be estimated later)
+        self.idle_power = 100.0             # Power used on DC bus (Watts, for inverters, Cerbo, etc.)
 
         # Charging, Discharging, Maintaining Settings
         self.charging_power = 4000.0        # For Charging, battery charging power (DC Watts)
@@ -287,7 +288,7 @@ class ESSMode3Control:
         # target_soc is applicable to Charging and Discharging States.
         # charging_power is applicable to Charging State.
         # passthru_after_soc is applicable to Maintaining State.
-        # use_batteries is applicable to AllLoadsPV
+        # use_battery is applicable to AllLoadsPV
 
         # Settings
         mode3, inverter, charger, msg = True, False, False, ''
@@ -376,6 +377,15 @@ class ESSMode3Control:
         # Get Critical Loads Power usage
         output_power = await self.quattro.output_power_watts()       # total, L1, L2
 
+        # Input power usage (negative is feed-in to grid)
+        input_power = await self.quattro.input_power_watts()         # total, L1, L2
+        total_power = [output_power[0] - input_power[0],
+                       output_power[1] - input_power[1],
+                       output_power[2] - input_power[2]]
+
+        # Estimate inverter/charger efficiency at this total output power level
+        self.efficiency = self.quattro.estimated_efficiency(total_power[0])
+
         # Get current battery State of Charge
         soc = await self.main_shunt.state_of_charge()
 
@@ -383,7 +393,7 @@ class ESSMode3Control:
         pv_dc_power = await self.all_mppt.total_dc_power()
         if pv_dc_power < 100.0:
             pv_dc_power = 0.0
-        pv_power = self.efficiency * pv_dc_power
+        pv_power = self.efficiency * pv_dc_power / 100.0
 
         # Charging Battery
         if self.state == State.Charging:
@@ -403,7 +413,7 @@ class ESSMode3Control:
 
         # All Loads PV Consumption
         elif self.state == State.AllLoadsPV:
-            await self.all_loads_pv(soc, pv_power, output_power)
+            await self.all_loads_pv(soc, pv_power, output_power, total_power)
 
         # Increment counter
         self.count += 1
@@ -454,21 +464,25 @@ class ESSMode3Control:
             self.charge_target_met = False
 
         # DC Watts from PV should be used if available
-        dc_power_needed = self.charging_power - pv_dc_power
+        dc_power_needed = self.charging_power - pv_dc_power + self.idle_power
         dc_power_needed = max(dc_power_needed, 0.0)
-        ac_power_needed_per_inverter = 0.0 if self.charge_target_met else (0.5 * dc_power_needed / self.efficiency)
+        ac_power_needed_per_inverter = 0.0 if self.charge_target_met \
+            else (0.5 * dc_power_needed / (self.efficiency/100.0))
 
         # Setpoint is Critical Loads plus extra power to charge batteries (split charging between Quattros)
-        setpoint = [output_power[1] + ac_power_needed_per_inverter,
-                    output_power[2] + ac_power_needed_per_inverter]
-        await self.quattro.set_mode_3_power_setpoint(*setpoint)
+        l1_setpoint = output_power[1] + ac_power_needed_per_inverter
+        l2_setpoint = output_power[2] + ac_power_needed_per_inverter
+
+        self.setpoint = [l1_setpoint + l2_setpoint, l1_setpoint, l2_setpoint]
+        await self.quattro.set_mode_3_power_setpoint(self.setpoint[1], self.setpoint[2])
 
         word = 'Not Charging' if self.charge_target_met else 'Charging'
 
         print(f'{self.time_now} [{word}] [PV Power {pv_dc_power:4.0f} W] '
               f'[Battery Power {dc_power_needed:4.0f} W] '
               f'[Per Inverter AC Power {ac_power_needed_per_inverter:4.0f} W] '
-              f'[SoC {soc:5.1f}%] [Target {self.target_soc:5.1f}%]')
+              f'[SoC {soc:5.1f}%] [Target {self.target_soc:5.1f}%] '
+              f'[Setpoint {self.setpoint[0]:4.0f} W] [Eff {self.efficiency:4.1f}%]')
 
     async def discharging(self, soc, output_power):
         # Discharges the battery using only Critical Loads.
@@ -487,14 +501,17 @@ class ESSMode3Control:
             self.discharge_target_met = False
 
         # Setpoint should match Critical Loads (unless target has been reached)
-        setpoint = (output_power[1] if self.discharge_target_met else 0.0,
-                    output_power[2] if self.discharge_target_met else 0.0)
-        await self.quattro.set_mode_3_power_setpoint(*setpoint)
+        l1_setpoint = (output_power[1] + 0.5 * self.idle_power) if self.discharge_target_met else 0.0
+        l2_setpoint = (output_power[2] + 0.5 * self.idle_power) if self.discharge_target_met else 0.0
 
-        word = 'Not Discharging' if self.discharge_target_met else 'Discharging'
+        self.setpoint = [l1_setpoint + l2_setpoint, l1_setpoint, l2_setpoint]
+        await self.quattro.set_mode_3_power_setpoint(self.setpoint[1], self.setpoint[2])
 
-        print(f'{self.time_now} [{word}] [Critical Loads {output_power[0]:4.0f} W] '
-              f'[SoC {soc:5.1f}%] [Target {self.target_soc:5.1f}%]')
+        status = 'Not Discharging' if self.discharge_target_met else 'Discharging'
+
+        print(f'{self.time_now} [{status}] [Critical Loads {output_power[0]:4.0f} W] '
+              f'[SoC {soc:5.1f}%] [Target {self.target_soc:5.1f}%] '
+              f'[Setpoint {self.setpoint[0]:4.0f} W] [Eff {self.efficiency:4.1f}%]')
 
     async def maintaining(self, soc, pv_dc_power, output_power):
         # Maintains the target SoC by either charging or discharging the batteries.
@@ -531,37 +548,37 @@ class ESSMode3Control:
         out_ratio_l1 = output_power[1] / output_power[0]             # L1 ratio of total power
         out_ratio_l2 = output_power[2] / output_power[0]             # L2 ratio of total power
 
-        critical_pv_power = [min(pv_power, output_power[0]), 0.0, 0.0]
+        critical_pv_power = [min(pv_power, output_power[0] + self.idle_power), 0.0, 0.0]
         critical_pv_power[1] = critical_pv_power[0] * out_ratio_l1
         critical_pv_power[2] = critical_pv_power[0] * out_ratio_l2
 
         # Use the remainder of the PV power to charge the battery
         battery_charging_power = max(pv_power - critical_pv_power[0], 0)
-        setpoint = [(output_power[1] - critical_pv_power[1]), (output_power[2] - critical_pv_power[2])]
-        await self.quattro.set_mode_3_power_setpoint(*setpoint)
+
+        # Setpoint should also include idle power
+        l1_setpoint = output_power[1] - critical_pv_power[1] + 0.5 * self.idle_power
+        l2_setpoint = output_power[2] - critical_pv_power[2] + 0.5 * self.idle_power
+
+        self.setpoint = [l1_setpoint + l2_setpoint, l1_setpoint, l2_setpoint]
+        await self.quattro.set_mode_3_power_setpoint(self.setpoint[1], self.setpoint[2])
 
         print(f'{self.time_now} [Critical Load PV Power {self.three_power(critical_pv_power)} W] '
-              f'[Battery Charging Power {battery_charging_power:4.0f} W]')
+              f'[Battery Charging Power {battery_charging_power:4.0f} W] '
+              f'[Setpoint {self.setpoint[0]:4.0f} W] [Eff {self.efficiency:4.1f}%]')
 
-    async def all_loads_pv(self, soc, pv_power, output_power):
+    async def all_loads_pv(self, soc, pv_power, output_power, total_power):
         # Powers all loads using the grid meter to set a grid setpoint similar to ESS Mode 2.
         # By default, only PV power is used to power the loads.
         # Excess PV power will charge the batteries.
         #
-        # If use_battery is True, or if the SoC is over use_batteries_soc,
+        # If always_use_batteries is True, or if the SoC is over use_batteries_soc,
         # both PV and battery power will be used to power the loads
         # up to the limit of the inverters.
 
         # Initial Setpoint
         if self.count == 0:
-            self.setpoint = list(await self.quattro.ess_power_setpoint())
+            self.setpoint = list(await self.quattro.ess_power_setpoint())   # total, L1, L2
             await self.quattro.set_mode_3_power_setpoint(self.setpoint[1], self.setpoint[2])
-
-        # Input power usage (negative is feed-in to grid)
-        input_power = await self.quattro.input_power_watts()         # total, L1, L2
-        total_power = [output_power[0] - input_power[0],
-                       output_power[1] - input_power[1],
-                       output_power[2] - input_power[2]]
 
         # Try to hold the actual grid power usage close to the grid setpoint
         grid_power = await self.grid.power_watts()  # total, L1, L2
@@ -587,7 +604,7 @@ class ESSMode3Control:
         # Compute the miniumum setpoint so that maximum inverter power is not exceeded (per inverter)
         min_setpoint_power = [0.0, output_power[1] - max_inverter_power / 2, output_power[2] - max_inverter_power / 2]
 
-        # Delayed start for debugging
+        # Delayed start for debugging to analyze startup behavior
         if self.count >= 20:
             # Use a fast time constant when grid power drops below desired offset (per inverter)
             tc1 = self.time_constant if grid_power[1] > self.grid_setpoint else self.fast_time_constant
@@ -609,13 +626,13 @@ class ESSMode3Control:
                   f'[Grid {self.three_power(grid_power)} W] '
                   f'[Inverter {self.three_power(total_power)} W] '
                   f'[Needed {self.three_power(power_needed_now)} W] [PV {pv_power:4.0f} W] '
-                  f'[Setpoint {self.three_power(self.setpoint)} W]')
+                  f'[Setpoint {self.three_power(self.setpoint)} W] [Eff {self.efficiency:4.1f}%]')
         else:
             print(f'{self.time_now} '
                   f'[Grid {grid_power[0]:4.0f} W] '
                   f'[Inverter {total_power[0]:4.0f} W] '
                   f'[Needed {power_needed_now[0]:4.0f} W] [PV {pv_power:4.0f} W] '
-                  f'[Setpoint {self.setpoint[0]:4.0f} W]')
+                  f'[Setpoint {self.setpoint[0]:4.0f} W] [Eff {self.efficiency:4.1f}%]')
 
     @staticmethod
     def three_power(power):
@@ -623,8 +640,7 @@ class ESSMode3Control:
 
     @staticmethod
     def add_time(hour, minute, h, m):
-        hh = hour + h
-        mm = minute + m
+        hh, mm = (hour + h), (minute + m)
         if mm >= 60:
             mm -= 60
             hh += 1
@@ -859,5 +875,7 @@ if __name__ == "__main__":
 
     # Run the main control loop
     ess_mode_3 = ESSMode3Control()
-    asyncio.run(ess_mode_3.main_control_loop(startup_state, target_soc=tsoc, use_schedule=do_schedule,
+    asyncio.run(ess_mode_3.main_control_loop(startup_state,
+                                             target_soc=tsoc,
+                                             use_schedule=do_schedule,
                                              use_battery=use_batteries))
