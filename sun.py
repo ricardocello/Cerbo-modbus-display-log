@@ -14,11 +14,10 @@ class Sun:
     def __init__(self):
         self.latitude = 38.297138    # arbitrary funeral home coordinates
         self.longitude = -77.483956
+        self.tz = ZoneInfo('US/Eastern')
 
-        self.current_date = datetime.now()
-        tz = ZoneInfo('US/Eastern')
-        localized_dt = self.current_date.replace(tzinfo=tz)
-        self.dst_active = localized_dt.dst().total_seconds() != 0
+        self.current_date = datetime.now(self.tz)
+        self.dst_active = self.current_date.dst().total_seconds() != 0
 
     def set_lat_long(self, latitude, longitude):
         self.latitude = latitude
@@ -26,8 +25,7 @@ class Sun:
 
     def set_date(self, day, month, year):
         self.current_date = datetime(day=day, month=month, year=year)
-        tz = ZoneInfo('US/Eastern')
-        localized_dt = self.current_date.replace(tzinfo=tz)
+        localized_dt = self.current_date.replace(tzinfo=self.tz)
         self.dst_active = localized_dt.dst().total_seconds() != 0
 
     def sunrise_time(self):
@@ -127,3 +125,7 @@ if __name__ == "__main__":
 
     print(f'Sunrise {sunrise_h:02}:{sunrise_m:02}')
     print(f'Sunset {sunset_h:02}:{sunset_m:02}')
+
+    tz = ZoneInfo('US/Eastern')
+    today = datetime.now(tz)
+    print(today)
