@@ -243,10 +243,16 @@ class ESSMode3Control:
         # Daily Schedule
         self.action_clock = ActionClock()
 
+        # Before Sunrise
         self.action_clock.add_action(self.sunrise[0] - 5, self.sunrise[1], (State.Discharging, gui_min_soc))
+
+        # Daytime
         self.action_clock.add_action(self.sunrise[0] + 1, self.sunrise[1], (State.AllLoadsPV, gui_min_soc))
+
+        # Afternoon
         self.action_clock.add_action(self.afternoon[0], self.afternoon[1], (State.Maintaining, 50.0, False))
 
+        # Twenty minutes after sunset
         t = self.add_time(self.sunset[0], self.sunset[1], 0, 20)
         self.action_clock.add_action(t[0], t[1], (State.Maintaining, 50.0, True))
 
@@ -257,12 +263,12 @@ class ESSMode3Control:
             self.action_clock.show()
 
     async def calculate_sun_times(self):
-        # Compute the sunrise and sunset times for today
+        # Compute the approximate sunrise and sunset times for today
         self.sun = Sun()
         self.sunrise = self.sun.sunrise_time()
         self.sunset = self.sun.sunset_time()
 
-        # Compute the solar day duration and afternoon time (as a ratio of the solar day)
+        # Compute the approximate solar day duration and afternoon time (as a ratio of the solar day)
         solar_duration_minutes = 60 * self.sunset[0] + self.sunset[1] - 60 * self.sunrise[0] - self.sunrise[1]
         afternoon_start = 60 * self.sunrise[0] + self.sunrise[1] + self.afternoon_ratio * solar_duration_minutes
         afternoon_h = int(afternoon_start / 60)
@@ -275,13 +281,13 @@ class ESSMode3Control:
 
     async def check_daily_schedule(self):
         # Gets the current timestamp, and checks to see if an action should occur if the Daily Schedule is active.
-        # On startup or at midnight, calculates the solar times and creates a new daily schedule.
+        # On startup or at midnight, automatically calculates the solar times and creates a new daily schedule.
 
         # Get the current time
         self.now = datetime.now(self.tz)
         self.time_now = self.now.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]   # Include milliseconds
 
-        # Check for date change (just after midnight, or at startup) and create new daily schedule if so
+        # Check for date change (happens just after midnight, or at startup) and create new daily schedule if so
         if self.previous_now is None or self.now.day != self.previous_now.day:
             await self.create_daily_schedule()
 
@@ -306,9 +312,10 @@ class ESSMode3Control:
               f'[{action[3][0]}] [Target SoC {action[3][1]:.1f}%]')
         await self.change_state(action[3][0], target_soc=action[3][1], passthru_after_soc=do_passthru)
 
-    async def change_state(self, new_state, target_soc=50.0, charging_power=4000.0,
+    async def change_state(self, new_state,
+                           target_soc=50.0, charging_power=4000.0,
                            passthru_after_soc=False, use_battery=False):
-        # Transitions the custom ESS to a new state.
+        # Transitions the Mode 3 ESS to a new state.
         #
         # target_soc is applicable to Charging and Discharging States.
         # charging_power is applicable to Charging State.
@@ -368,7 +375,7 @@ class ESSMode3Control:
             self.always_use_batteries = use_battery
             self.grid_export = GridExportStatistics()
 
-        # Settings for System and Quattro hub4
+        # Settings for System and Quattro hub4 in Mode 3
         if new_state != State.Mode2:
             await self.system.set_ess_mode_3(mode3)
             await self.quattro.enable_inverter(inverter)
@@ -380,11 +387,11 @@ class ESSMode3Control:
             await self.quattro.set_pv_feed_in_limit(32767, 32767)
             # tbd: other settings may have changed, need to check
 
-        # Change of state
+        # A change of state has occurred
         if new_state != self.state:
             print(msg)
 
-            # If leaving AllLoadsPC, show the grid export statistics and update the log file
+            # If leaving AllLoadsPV, show the grid export statistics and update the log file
             if self.state == State.AllLoadsPV:
                 print(self.grid_export)
                 self.grid_export.log_events_to_file()
@@ -392,11 +399,12 @@ class ESSMode3Control:
 
     async def control(self):
         # Implements the control function called repeatedly by the main control loop at 1 or 10 Hz.
+        # All states are handled here.
 
-        # Check dailu schedule to see if change in state is needed
+        # Check daily schedule to see if change in state is needed
         await self.check_daily_schedule()
 
-        # Check to see if user has manually changed the ESS Mode.
+        # Check to see if user has manually changed the ESS Mode back to Mode 2.
         if await self.check_for_user_mode_change():
             return
 
@@ -405,6 +413,8 @@ class ESSMode3Control:
 
         # Input power usage (negative is feed-in to grid)
         self.input_power = await self.quattro.input_power_watts()         # total, L1, L2
+
+        # Total inverter power
         self.total_power = [self.output_power[0] - self.input_power[0],
                             self.output_power[1] - self.input_power[1],
                             self.output_power[2] - self.input_power[2]]
@@ -415,27 +425,29 @@ class ESSMode3Control:
         # Get current battery State of Charge
         self.current_soc = await self.main_shunt.state_of_charge()
 
-        # Get available PV DC Power, and calculate estimated AC power that can be created using inverter
+        # Get available PV DC Power
         self.pv_dc_power = await self.all_mppt.total_dc_power()
+
+        # Calculate estimated AC power that can be created using inverter at the current efficiency
         self.pv_power = self.efficiency * self.pv_dc_power / 100.0
 
-        # Charging Battery
+        # State: Charging Battery
         if self.state == State.Charging:
             await self.charging()
 
-        # Discharging Battery
+        # State: Discharging Battery
         elif self.state == State.Discharging:
             await self.discharging()
 
-        # Maintaining Battery
+        # State: Maintaining Battery
         elif self.state == State.Maintaining:
             await self.maintaining()
 
-        # Critical Loads PV Consumption
+        # State: Critical Loads PV Consumption
         elif self.state == State.CriticalLoadsPV:
             await self.critical_loads_pv()
 
-        # All Loads PV Consumption
+        # State: All Loads PV Consumption
         elif self.state == State.AllLoadsPV:
             await self.all_loads_pv()
 
@@ -443,15 +455,15 @@ class ESSMode3Control:
         self.count += 1
 
     async def check_for_user_mode_change(self):
-        # Checks to see if the user has changed ESS modes in the console GUI.
+        # Checks to see if the user has changed ESS modes in the GX console GUI.
         # If so, suspends the current Mode 3 control loop and waits for a switch back to External Control.
-        # If the Minimum SoC GUI setting was changed, the new target SoC will use that value.
+        # If the Minimum SoC GUI setting was changed, the target SoC will now use that value.
         # This provides a way to update the ESS Mode 3 target SoC in real time.
 
         # Check if user has manually changed back to Mode 2 ESS
         still_mode3 = await self.system.is_ess_mode_3()
 
-        # Mode 3 has resumed because user selected External Control
+        # Mode 3 has resumed because user selected External Control in the GX GUI
         if still_mode3 and not self.is_still_mode3:
             self.target_soc = await self.system.ess_min_state_of_charge()
             print(f'# User has resumed External Control [New Target SoC {self.target_soc:.1f}%]')
@@ -465,7 +477,7 @@ class ESSMode3Control:
         # Mode 3 is no longer selected, don't do anything else
         elif not still_mode3:
             if self.is_still_mode3:
-                print('# User has changed modes using Console, will resume when External Control is selected')
+                print('# User has changed modes using GX Console, Mode 3 will resume when External Control is selected')
                 self.is_still_mode3 = False
             return True
 
@@ -573,8 +585,11 @@ class ESSMode3Control:
         # Excess PV power will charge the batteries.
 
         # Calculate the L1/L2 balance ratios
-        ratio_l1 = self.output_power[1] / self.output_power[0]        # L1 ratio of output power
-        ratio_l2 = self.output_power[2] / self.output_power[0]        # L2 ratio of output power
+        try:
+            ratio_l1 = self.output_power[1] / self.output_power[0]        # L1 ratio of output power
+            ratio_l2 = self.output_power[2] / self.output_power[0]        # L2 ratio of output power
+        except ZeroDivisionError:
+            ratio_l1 = ratio_l2 = 0.5
 
         critical_pv_power = [min(self.pv_power, self.output_power[0] + self.idle_power), 0.0, 0.0]
         critical_pv_power[1] = min(self.max_power_per_inverter, critical_pv_power[0] * ratio_l1)
@@ -632,8 +647,11 @@ class ESSMode3Control:
         elif not self.always_use_batteries and self.current_soc < self.use_batteries_soc:
 
             # Calculate the L1/L2 balance ratios
-            ratio_l1 = self.total_power[1] / self.total_power[0]     # L1 ratio of total power
-            ratio_l2 = self.total_power[2] / self.total_power[0]     # L2 ratio of total power
+            try:
+                ratio_l1 = self.total_power[1] / self.total_power[0]     # L1 ratio of total power
+                ratio_l2 = self.total_power[2] / self.total_power[0]     # L2 ratio of total power
+            except ZeroDivisionError:
+                ratio_l1 = ratio_l2 = 0.5
 
             # Allocate PV power to inverters based on the ratio
             l1_pv = self.pv_power * ratio_l1
@@ -875,7 +893,7 @@ class GridExportStatistics:
 
     def log_events_to_file(self):
         today = datetime.now(self.tz)
-        filename = today.strftime('%Y_%m_%d_grid_export.log')
+        filename = today.strftime('%Y_%m_%d_%H_%M_%S_grid_export.log')
 
         with open(filename, 'a') as file:
             # Header Information
