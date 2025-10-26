@@ -690,6 +690,10 @@ class ESSMode3Control:
             # Limit the setpoint so the inverters are not overloaded (per inverter)
             self.setpoint[1] = max(self.setpoint[1], min_setpoint[1])
             self.setpoint[2] = max(self.setpoint[2], min_setpoint[2])
+
+            # Limit the setpoint so no battery charging can occur (per inverter)
+            self.setpoint[1] = min(self.setpoint[1], self.output_power[1])
+            self.setpoint[2] = min(self.setpoint[2], self.output_power[2])
             self.setpoint[0] = self.setpoint[1] + self.setpoint[2]
 
         await self.quattro.set_mode_3_power_setpoint(self.setpoint[1], self.setpoint[2])
