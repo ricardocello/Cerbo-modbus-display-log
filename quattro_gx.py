@@ -53,8 +53,24 @@ class Quattros(CerboGX):
         efficiency = max(efficiency, 50.0)
         return efficiency
 
+    async def set_mode_charger_only(self):
+        # Switch position
+        await self.write_uint(33, 1)
+
+    async def set_mode_inverter_only(self):
+        # Switch position
+        await self.write_uint(33, 2)
+
+    async def set_mode_on(self):
+        # Switch position
+        await self.write_uint(33, 3)
+
+    async def set_mode_off(self):
+        # Switch position
+        await self.write_uint(33, 4)
+
     async def set_mode_3_power_setpoint(self, l1_watts, l2_watts):
-        # Sets the power level at AC Input (negative values feed-in power)
+        # ESS: Sets the power level at AC Input (negative values feed-in power)
         # /Hub4/L1/AcPowerSetpoint (37)
         # /Hub4/L2/AcPowerSetpoint (40)
 
@@ -62,19 +78,19 @@ class Quattros(CerboGX):
         await self.write_int(40, int(l2_watts))
 
     async def enable_charger(self, yes_no):
-        # Enables or disables the battery charger
+        # ESS: Enables or disables the battery charger
         # /Hub4/DisableCharge (38)
 
         await self.write_uint(38, 0 if yes_no else 1)
 
     async def enable_inverter(self, yes_no):
-        # Enables or disables inverter power
+        # ESS: Enables or disables inverter power
         # /Hub4/DisableFeedIn (39)
 
         await self.write_uint(39, 0 if yes_no else 1)
 
     async def set_idle_mode(self):
-        # Sets idle mode (no charger, no feed-in)
+        # ESS: Sets idle mode (no charger, no feed-in)
         # /Hub4/DisableCharge (38)
         # /Hub4/DisableFeedIn (39)
 
@@ -82,13 +98,13 @@ class Quattros(CerboGX):
         await self.write_uint(39, 1)
 
     async def set_pv_feed_in(self, yes_no):
-        # Enables or disables PV power feed-in
+        # ESS: Enables or disables PV power feed-in
         # /Hub4/DoNotFeedInOvervoltage (65)
 
         await self.write_uint(65, 0 if yes_no else 1)
 
     async def set_pv_feed_in_limit(self, l1_watts, l2_watts):
-        # Sets the limit on PV feed-in power (use large number for no limit)
+        # ESS: Sets the limit on PV feed-in power (use large number for no limit)
         # /Hub4/L1/MaxFeedInPower (66)
         # /Hub4/L2/MaxFeedInPower (67)
 
@@ -96,7 +112,7 @@ class Quattros(CerboGX):
         await self.write_int(67, int(l2_watts))
 
     async def set_setpoints_as_limit(self, yes_no):
-        # Enables or disables input power setpoints as limits
+        # ESS: Enables or disables input power setpoints as limits
         # /Hub4/TargetPowerIsMaxFeedIn (71)
 
         await self.write_uint(71, 0 if yes_no else 1)
@@ -112,7 +128,7 @@ class Quattros(CerboGX):
         return result / 100.0
 
     async def ess_power_setpoint(self):
-        # Gets the power level at AC Input (negative values feed-in power)
+        # ESS: Gets the power level at AC Input (negative values feed-in power)
         # /Hub4/L1/AcPowerSetpoint (37)
         # /Hub4/L2/AcPowerSetpoint (40)
 
@@ -334,21 +350,21 @@ class Quattros(CerboGX):
         return f'Unknown {state}'
 
     async def is_feed_in_enabled(self):
-        # Returns inverter power feed-in setting
+        # ESS: Returns inverter power feed-in setting
         # /Hub4/DisableFeedIn (39)
 
         result = await self.read_uint(39)
         return result == 0
 
     async def is_pv_feed_in_enabled(self):
-        # Returns PV power feed-in setting
+        # ESS: Returns PV power feed-in setting
         # /Hub4/DoNotFeedInOvervoltage (65)
 
         result = await self.read_uint(65)
         return result == 0
 
     async def max_feed_in_watts(self):
-        # Returns maximum feed-in power (Total, L1, L2)
+        # ESS: Returns maximum feed-in power (Total, L1, L2)
         # /Hub4/L1/MaxFeedInPower (66), /Hub4/L2/MaxFeedInPower (67)
 
         try:
@@ -361,14 +377,14 @@ class Quattros(CerboGX):
         return (l1+l2), l1, l2
 
     async def is_charging_enabled(self):
-        # Returns battery charger setting
+        # ESS: Returns battery charger setting
         # /Hub4/DisableCharge (38)
 
         result = await self.read_uint(38)
         return result == 0
 
     async def are_setpoints_limits(self):
-        # Retuns the setpoints as limit setting
+        # ESS: Retuns the setpoints as limit setting
         # /Hub4/TargetPowerIsMaxFeedIn (71)
 
         result = await self.read_uint(71)

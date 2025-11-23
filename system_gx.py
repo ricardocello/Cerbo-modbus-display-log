@@ -171,6 +171,16 @@ class System(CerboGX):
         table.ve_charge_power = await self.ve_charge_power_watts()
         return table
 
+    async def set_relay_1(self, off_on):
+        # Sets relay #1 state
+        # /Relay/0/State (806)
+        await self.write_uint(806, 1 if off_on else 0)
+
+    async def set_relay_2(self, off_on):
+        # Sets relay #2 state
+        # /Relay/1/State (807)
+        await self.write_uint(807, 1 if off_on else 0)
+
     async def set_grid_power_setpoint_watts(self, watts):
         # Sets the ESS Grid Power Setpoint (negative to send power to grid)
         # /Settings/Cgwacs/AcPowerSetPoint (2700)
@@ -227,6 +237,33 @@ class System(CerboGX):
     async def ess_settings2(self):
         # Read all current ESS settings at 2900
         return await self.read(2900, 4)
+
+    async def relay_1_state(self):
+        # Returns the current state of Relay #1
+        # /Relay/0/State (806)
+        try:
+            result = await self.read_uint(806)
+        except self.errors:
+            return False
+        return result != 0
+
+    async def relay_2_state(self):
+        # Returns the current state of Relay #2
+        # /Relay/1/State (807)
+        try:
+            result = await self.read_uint(807)
+        except self.errors:
+            return False
+        return result != 0
+
+    async def dvcc_max_charge_current_amps(self):
+        # Returns the maximum DVCC charge current to batteries (-1 if no linit)
+        # /Settings/SystemSetup/MaxChargeCurrent (2705)
+        try:
+            result = await self.read_int(2705)
+        except self.errors:
+            return 0
+        return result
 
     async def ac_grid_watts(self):
         # Returns the current total Grid Power (L1+L2)

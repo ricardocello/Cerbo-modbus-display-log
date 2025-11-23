@@ -190,6 +190,12 @@ class AllMPPT:
             total_w += w
         return total_w
 
+    async def total_dc_current(self):
+        total_a = 0.0
+        for m in self.mppt:
+            w, v, a = await m[2].dc_power_watts()
+            total_a += a
+        return total_a
     async def read_pv_dc_values(self):
         # Gets the PV and DC values from all the MPPTs.
         pv_w = [0.0]              # (total, 250/70 W, 250/100 W)

@@ -41,3 +41,4 @@ ACLOAD_METER_3 = 45         # Emulated VM-3P75CT for Well and Septic Pumps using
 TEMPERATURE_1 = 20          # Ruuvi Tag
 TEMPERATURE_2 = 24          # Chargeverter Temperature Sensor
 TEMPERATURE_3 = 25          # Rack Temperature Sensor
+GENERATOR = 100             # Generator device for grid start/stop (Adam DeLay Cerbo/AUX1 relay cable and assistants)
