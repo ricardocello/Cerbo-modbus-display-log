@@ -30,7 +30,7 @@
 #     Either way, all of the available PV is consumed by either the loads and/or the batteries.
 #
 #     If the SoC reaches the high SoC (e.g. 90%), the Grid is disconnected in an attempt to prevent the
-#     batteries from filling completely, regardless of the PV power being sufficient for the loads.
+#     batteries from filling completely, regardless of whether the PV power is sufficient for the loads.
 #
 # (3) CheckSoC State
 #     Starting in the afternoon, the battery BMS SoC is checked for drift by comparing to the shunt SoC.
@@ -563,9 +563,12 @@ class NoESSSchedule:
                 await self.connect_to_grid(True)
 
             if self.verbose:
+                charge = f'[Charging {self.charge_current:.1f} A]' if self.charge_current >= 0.0 else \
+                         f'[Discharging {-self.charge_current:.1f} A]'
+
                 print(f'{self.time_now} [SoC Monitoring] [Grid Disconnected] '
                       f'[SoC {self.current_soc:5.1f}% {self.target_soc:5.1f}%] '
-                      f'[Charging {self.charge_current:.1f} A] [PV DC {self.pv_dc_current:.1f} A] '
+                      f'{charge} [PV DC {self.pv_dc_current:.1f} A] '
                       f'[PV Power {self.pv_power:.0f} W] [Loads {self.output_power[0]:.0f} W]')
 
     async def check_soc(self):
@@ -580,6 +583,8 @@ class NoESSSchedule:
         # If difference is under threshold, transition immediately back to MonitoringSoC state
         if not self.check_recharging and abs(soc_error) < self.soc_error_threshold:
             await self.change_state(State.MonitorSoC, self.target_soc)
+            if self.verbose:
+                print(f'{self.time_now} [Check SoC] [SoC {self.current_soc:5.1f}%] [SoC Error {soc_error:5.1f}%]')
             return
 
         # Connect to grid and set charge current once
