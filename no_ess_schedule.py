@@ -11,14 +11,14 @@
 # The current Daily Schedule has these actions:
 #
 # (1) Discharging State
-#     Starting one hour before sunrise, the batteries are discharged down to the minimum SoC (e.g. 20%)
+#     Starting before sunrise, the batteries are discharged down to the minimum SoC (e.g. 20%)
 #     by powering the Critical Loads with the inverters.
 #
 #     Any available PV will also power the loads, but in the early hours this will be minimal.
 #     If the minimum SoC is reached, a transition is automatically made to the MonitoringSoC state.
 #
 # (2) MonitoringSoC State
-#     Starting two hours after sunrise, the incoming PV power is monitored while the grid is connected.
+#     Starting after sunrise, the incoming PV power is monitored while the grid is connected.
 #     When the DVCC algorithm limits or turns off an MPPT, the DVCC current limit is slowly raised
 #     until it permits all of the PV power to be consumed by the loads or the batteries.
 #     Minimal grid power is used to charge the batteries in this state.
@@ -30,18 +30,22 @@
 #     Either way, all of the available PV is consumed by either the loads and/or the batteries.
 #
 #     If the SoC reaches the high SoC (e.g. 90%), the Grid is disconnected in an attempt to prevent the
-#     batteries from filling completely, regarless of the PV power being sufficient for the loads.
+#     batteries from filling completely, regardless of the PV power being sufficient for the loads.
 #
-# (3) Maintaining State
-#     Starting thirty minutes after sunset, the battery is maintained at its SoC by disabling the charger.
+# (3) CheckSoC State
+#     Starting in the afternoon, the battery BMS SoC is checked for drift by comparing to the shunt SoC.
+#     If the difference is under the threshold, transitions immediately back to the MonitoringSoC state.
+#     If the difference is over the threshold, the batteries are charged to 100% via PV and/or grid.
+#     When the full recharge is completed, transitions back to the MonitoringSoC state.
+#     The BMS SoC has been reset when 100% SoC is indicated.
+#     This also ensures that the batteries are balanced occasionally.
+#
+# (4) Maintaining State
+#     Starting after sunset, the battery is maintained at its SoC by disabling the charger.
 #     The Grid is reconnected overnight unless there is an outage.
 #     The SoC will typically be between 40% and 50% for a target SoC of 50%.
 #     This is sufficient to carry through the dinner and evening hours, providing a backup power supply.
 #     This continues through to the next morning.
-#
-#     The difference between the shunt SoC and the BMS SoC is monitored. If the difference exceeds 8%,
-#     the batteries are automatically recharged to 100% during this state overnight.
-#     This feature addresses both the poor BMS SoC issue and the need to recharge to 100% weekly.
 #
 # -------------------------------------------------------------------------------------------------------------------
 # Copyright 2023 ricardocello
@@ -107,6 +111,10 @@ class State(Enum):
     # Uses only PV to charge the batteries up to 50% SoC. Above 50%, disconnects from the grid.
     MonitorSoC = 5
 
+    # CheckSoC
+    # Checks for BMS SoC drift, recharges batteries to 100% if threshold exceeded.
+    CheckSoC = 6
+
 
 class NoESSSchedule:
     def __init__(self, addr=settings_gx.GX_IP_ADDRESS):
@@ -118,14 +126,15 @@ class NoESSSchedule:
         self.hysteresis = 10.0               # Initiate recharge/discharge when this far below/above target SoC (%)
 
         self.charge_limit_amps = 120.0       # Battery DVCC charging current limit (sized to meet battery specs)
+        self.pv_charge_limit_amps = 140.0    # Battery DVCC charging current limit (sized to meet battery specs)
         self.efficiency = 92.0               # Best inverter/charger efficiency (%, will be updated)
 
         self.soc_error_threshold = 8.0       # Difference between shunt and BMS SoC causes recharge to 100% (%)
-        self.recharge_current = 50.0         # Maintaining recharging current (A)
+        self.recharge_current = 80.0         # CheckSoC recharging current (A)
 
-        self.maintaining_recharging = False  # True when maintaining state is recharging batteries to 100%
         self.charge_target_met = False       # True when the Charging target SoC has been reached
         self.discharge_target_met = False    # True when the Discharging target SoC has been reached
+        self.check_recharging = False        # True when recharging due to excessive BMS SoC drift
 
         # Control Loop
         self.verbose = True                  # Shows control loop parameters if True
@@ -220,15 +229,16 @@ class NoESSSchedule:
         self.action_clock = ActionClock()
 
         # Before Sunrise
-        self.action_clock.add_action(self.sunrise[0] - 1, self.sunrise[1],
-                                     (State.Discharging, self.min_soc))
+        self.action_clock.add_action(self.sunrise[0] - 1, self.sunrise[1], (State.Discharging, self.min_soc))
 
         # Daytime
-        self.action_clock.add_action(self.sunrise[0] + 2, self.sunrise[1],
-                                     (State.MonitorSoC, self.target_soc))
+        self.action_clock.add_action(self.sunrise[0] + 2, self.sunrise[1], (State.MonitorSoC, self.target_soc))
 
-        # Twenty minutes after sunset
-        t = self.add_time(self.sunset[0], self.sunset[1], 0, 20)
+        # Afternoon
+        self.action_clock.add_action(self.afternoon[0], self.afternoon[1], (State.CheckSoC, self.target_soc))
+
+        # After sunset
+        t = self.add_time(self.sunset[0], self.sunset[1], 3, 0)
         self.action_clock.add_action(t[0], t[1], (State.Maintaining, self.target_soc))
 
         # Show Daily Schedule
@@ -320,6 +330,10 @@ class NoESSSchedule:
             msg = f'# [SoC Monitoring] [Target SoC {target_soc:.1f}%]'
             self.pv_monitor_limit = 2.0         # Adjusted dynamically (Amps)
 
+        # Check SoC state checks for BMS SoC drift and recharges if necessary
+        elif new_state == State.CheckSoC:
+            msg = f'# [Check SoC] [Target SoC {target_soc:.1f}%]'
+
         # A change of state has occurred
         if new_state != self.state:
             print(msg)
@@ -370,6 +384,10 @@ class NoESSSchedule:
         elif self.state == State.MonitorSoC:
             await self.monitoring_soc()
 
+        # State: Check SoC
+        elif self.state == State.CheckSoC:
+            await self.check_soc()
+
         # Increment counter
         self.count += 1
 
@@ -403,33 +421,24 @@ class NoESSSchedule:
 
     async def maintaining(self):
         # Connects to the Grid, but disables battery charging from both Grid and PV.
-        # If the difference between battery SoC and Shunt Soc exceeds 8%,
-        # recharges the battery to 100%, and then disables charging.
-
-        await self.connect_to_grid(True)
 
         # Only set the charge current once, allowing user to override in the GUI
         if self.count == 0:
+            await self.connect_to_grid(True)
             await self.set_max_charge_current(0.0)
 
-        # Check for excessive battery BMS SoC missmatch with shunt SoC
-        soc_error = self.current_soc - self.battery_soc
-        if not self.maintaining_recharging and abs(soc_error) >= self.soc_error_threshold:
-            await self.set_max_charge_current(self.recharge_current)
-            self.maintaining_recharging = True
-
-        # Battery BMS SoC has reached 100% SoC, done recharging
-        if self.maintaining_recharging and self.battery_soc == 100.0:
+        # If user disconnected from grid in the GUI, and the SoC is getting too low, reconnect to the grid
+        grid_connected = await self.is_grid_connected()
+        if not grid_connected and self.current_soc <= self.target_soc:
+            await self.connect_to_grid(True)
             await self.set_max_charge_current(0.0)
-            self.maintaining_recharging = False
 
         if self.verbose:
+            connected = '[Grid Connected]' if grid_connected else '[Grid Disconnected]'
             max_charge = await self.get_max_charge_current()
-            recharging = '[Recharging]' if self.maintaining_recharging else ''
 
-            print(f'{self.time_now} [Maintaining] [Grid Connected] {recharging} '
-                  f'[SoC {self.current_soc:5.1f}%] [SoC Error {soc_error:5.1f}%] '
-                  f'[Max Charge Current {max_charge:.0f} A] ')
+            print(f'{self.time_now} [Maintaining] {connected} '
+                  f'[SoC {self.current_soc:5.1f}%] [Max Charge Current {max_charge:.0f} A] ')
 
     async def monitoring_pv_charging(self):
         # Connects to the Grid, continuously adjusting the maximum charge current
@@ -480,7 +489,7 @@ class NoESSSchedule:
             self.pv_monitor_delay -= 1
 
         # Set the DVCC charging limit
-        self.pv_monitor_limit = min(self.pv_monitor_limit, self.charge_limit_amps)
+        self.pv_monitor_limit = min(self.pv_monitor_limit, self.pv_charge_limit_amps)
         await self.set_max_charge_current(self.pv_monitor_limit)
 
         # Return the MPPT status
@@ -547,7 +556,7 @@ class NoESSSchedule:
         # ----- Grid is currently disconnected -----
         else:
             # DVCC charging limit
-            await self.set_max_charge_current(self.charge_limit_amps)
+            await self.set_max_charge_current(self.pv_charge_limit_amps)
 
             # Current State of Charge has fallen below target SoC - hysteresis
             if self.current_soc < (self.target_soc - self.hysteresis):
@@ -558,6 +567,38 @@ class NoESSSchedule:
                       f'[SoC {self.current_soc:5.1f}% {self.target_soc:5.1f}%] '
                       f'[Charging {self.charge_current:.1f} A] [PV DC {self.pv_dc_current:.1f} A] '
                       f'[PV Power {self.pv_power:.0f} W] [Loads {self.output_power[0]:.0f} W]')
+
+    async def check_soc(self):
+        # Checks the difference between the battery BMS SoC and the shunt SoC.
+        # If the difference is acceptable, simply transitions back the MonitoringSoC state.
+        # If the threshold is exceeded, starts recharging the batteries to 100% to reset the BMS.
+        # When completed, transitions back to the MonitoringSoC state.
+
+        # Check for excessive battery BMS SoC missmatch with shunt SoC
+        soc_error = self.current_soc - self.battery_soc
+
+        # If difference is under threshold, transition immediately back to MonitoringSoC state
+        if not self.check_recharging and abs(soc_error) < self.soc_error_threshold:
+            await self.change_state(State.MonitorSoC, self.target_soc)
+            return
+
+        # Connect to grid and set charge current once
+        if not self.check_recharging:
+            await self.connect_to_grid(True)
+            await self.set_max_charge_current(self.recharge_current)
+            self.check_recharging = True
+
+        # Battery BMS SoC has reached 100% SoC, done recharging, so transition back to MonitoringSoC state
+        elif self.battery_soc == 100.0:
+            self.check_recharging = False
+            await self.change_state(State.MonitorSoC, self.target_soc)
+
+        if self.verbose:
+            max_charge = await self.get_max_charge_current()
+
+            print(f'{self.time_now} [Check SoC Recharging] [Grid Connected] '
+                  f'[SoC {self.current_soc:5.1f}%] [SoC Error {soc_error:5.1f}%] '
+                  f'[Max Charge Current {max_charge:.0f} A]')
 
     async def connect_to_grid(self, yes_no):
         state = await self.system.relay_1_state()
