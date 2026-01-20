@@ -272,8 +272,8 @@ class DailyHistogram:
 
 if __name__ == "__main__":
     # Execute main() if this file is executed directly
-    # dls = DailyLogSummary()
-    # dls.run()
+    dls = DailyLogSummary()
+    dls.run()
 
-    dh = DailyHistogram()
-    dh.run()
+    # dh = DailyHistogram()
+    # dh.run()
