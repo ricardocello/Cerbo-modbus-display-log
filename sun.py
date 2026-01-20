@@ -105,6 +105,11 @@ class Sun:
         # Return hour and minute
         hr = self.force_range(int(t), 24)
         minute = int(round((t - int(t)) * 60, 0))
+        if minute == 60:
+            hr += 1
+            minute = 0
+        if hr == 24:
+            hr = 0
         return hr, minute
 
     @staticmethod

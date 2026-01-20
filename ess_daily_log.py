@@ -210,7 +210,70 @@ class DailyLogSummary:
         return f'{file_date}  {grid_power_max_watts} {inverter_power_max_watts}'
 
 
+class Histogram:
+    def __init__(self, bin_size=100.0, num_bins=100):
+        self.bin_size = bin_size
+        self.num_bins = num_bins
+
+        self.bin_values = None
+        self.bin_count = None
+        self.reset()
+
+    def reset(self):
+        self.bin_values = [i * self.bin_size for i in range(self.num_bins)]
+        self.bin_count = [0] * self.num_bins
+
+    def add_values(self, values):
+        for v in values:
+            w = float(v)
+            b = int(w / self.bin_size)
+            self.bin_count[b] += 1
+
+    def show(self):
+        for i in range(self.num_bins):
+            print(f'{self.bin_values[i]:4.0f} {self.bin_count[i]}')
+
+
+class DailyHistogram:
+    # Reads all of the gzipped log files in the current directory.
+    # Calculates histogram bins for Solar PV 250/100 and 250/70 power output.
+
+    def __init__(self):
+        self.histogram_250_70 = Histogram()
+        self.histogram_250_100 = Histogram()
+
+    def run(self):
+        # Get list of compressed log files in the current directory
+        file_list = sorted(glob.glob('Log_*.gz'))
+
+        # Process each file
+        for fname in file_list:
+            self.process_file(fname)
+
+        # Display Histogram bins
+        print('MPPT 250/70')
+        self.histogram_250_70.show()
+
+        print('MPPT 250/100')
+        self.histogram_250_100.show()
+
+    def process_file(self, filename):
+        print(filename)
+        rlf = ESSLogReader(filename)
+        rlf.open_gzip_file()
+        rlf.save_column('250/70 PV Power (W)')
+        rlf.save_column('250/100 PV Power (W)')
+        rlf.read_whole_file()
+
+        self.histogram_250_70.add_values(rlf.get_saved_column('250/70 PV Power (W)'))
+        self.histogram_250_100.add_values(rlf.get_saved_column('250/100 PV Power (W)'))
+        rlf.file.close()
+
+
 if __name__ == "__main__":
     # Execute main() if this file is executed directly
-    dls = DailyLogSummary()
-    dls.run()
+    # dls = DailyLogSummary()
+    # dls.run()
+
+    dh = DailyHistogram()
+    dh.run()

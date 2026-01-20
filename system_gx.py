@@ -191,6 +191,11 @@ class System(CerboGX):
         # /Settings/Cgwacs/MaxDischargePower (2704)
         await self.write_uint(2704, int(0.5 + watts/10.0))
 
+    async def set_charge_voltage_limit(self, volts):
+        # Sets the charge voltage limit for managed batteries
+        # /Settings/SystemSetup/MaxChargeVoltage (2710)
+        await self.write_uint(2710, int(0.5 + 10.0 * volts))
+
     async def set_dvcc_max_charge_current_amps(self, amps):
         # Sets the maximum DVCC charge current to batteries (-1 if no linit)
         # /Settings/SystemSetup/MaxChargeCurrent (2705)
@@ -225,6 +230,11 @@ class System(CerboGX):
         # /Settings/SystemSetup/MaxChargeVoltage (2709)
         result = await self.read_uint(2709)
         return result == 1
+
+    async def charge_voltage_limit(self):
+        # Gets the charge voltage limit for managed batteries
+        # /Settings/SystemSetup/MaxChargeVoltage (2710)
+        return 0.1 * await self.read_uint(2710)
 
     async def ess_settings(self):
         # Read all current ESS settings at 2700

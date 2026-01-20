@@ -23,8 +23,8 @@
 #     until it permits all of the PV power to be consumed by the loads or the batteries.
 #     Minimal grid power is used to charge the batteries in this state.
 #
-#     When the SoC reaches the target SoC (e.g. 50%), the Grid is disconnected if there is sufficient
-#     PV power for the loads. Should the SoC drop below the hysteresis SoC (e.g. 40%) due to insufficient PV,
+#     When the SoC reaches the target SoC (e.g. 40%), the Grid is disconnected if there is sufficient
+#     PV power for the loads. Should the SoC drop below the hysteresis SoC (e.g. 30%) due to insufficient PV,
 #     the Grid is reconnected with charging coming exclusively from PV until it again exceeds the target SoC
 #     and there is sufficient PV power for the loads.
 #     Either way, all of the available PV is consumed by either the loads and/or the batteries.
@@ -46,6 +46,11 @@
 #     The SoC will typically be between 40% and 50% for a target SoC of 50%.
 #     This is sufficient to carry through the dinner and evening hours, providing a backup power supply.
 #     This continues through to the next morning.
+#
+# (5) Suspended State
+#     By enabling "Limit Managed Battery Charge Voltage",
+#     it is possible to suspend all control until the next scheduled event.
+#     Disabling it resumes normal operation.
 #
 # -------------------------------------------------------------------------------------------------------------------
 # Copyright 2023 ricardocello
@@ -70,6 +75,7 @@
 import sys
 import asyncio
 import time
+import math
 from zoneinfo import ZoneInfo
 from enum import Enum
 from datetime import datetime
@@ -115,12 +121,17 @@ class State(Enum):
     # Checks for BMS SoC drift, recharges batteries to 100% if threshold exceeded.
     CheckSoC = 6
 
+    # Suspended
+    # Takes no actions, even scheduled ones.
+    Suspended = 7
+
 
 class NoESSSchedule:
     def __init__(self, addr=settings_gx.GX_IP_ADDRESS):
 
         # Settings
         self.target_soc = 50.0               # Target state of charge
+        self.monitoring_target_soc = 40.0    # Target SoC for MonitoringSoC state
         self.min_soc = 20.0                  # Miniumum allowable State of Charge
         self.hi_soc = 90.0                   # High State of Charge
         self.hysteresis = 10.0               # Initiate recharge/discharge when this far below/above target SoC (%)
@@ -152,6 +163,9 @@ class NoESSSchedule:
 
         self.pv_power = 0.0                  # Estimated AC power available using PV DC Power (Watts)
         self.output_power = [0.0] * 3        # Measured output power of the inverters (Watts: L1+L2, L1, L2)
+
+        self.avg_output_power = 0.0          # 10 minute averge total output power for critical loads
+        self.avg_pv_power = 0.0              # 10 minute averge total pv AC power available
 
         # Timing
         self.timezone = 'US/Eastern'         # Change as needed
@@ -232,7 +246,8 @@ class NoESSSchedule:
         self.action_clock.add_action(self.sunrise[0] - 1, self.sunrise[1], (State.Discharging, self.min_soc))
 
         # Daytime
-        self.action_clock.add_action(self.sunrise[0] + 2, self.sunrise[1], (State.MonitorSoC, self.target_soc))
+        self.action_clock.add_action(self.sunrise[0] + 2, self.sunrise[1],
+                                     (State.MonitorSoC, self.monitoring_target_soc))
 
         # Afternoon
         self.action_clock.add_action(self.afternoon[0], self.afternoon[1], (State.CheckSoC, self.target_soc))
@@ -294,6 +309,22 @@ class NoESSSchedule:
               f'[{new_state}] [Target SoC {target_soc:.1f}%]')
         await self.change_state(new_state, target_soc)
 
+    async def check_suspend_switch(self):
+        # Checks the "Limit Managed Battery Chagre Voltage" switch.
+        # If just activated, changes to the Suspended state.
+        # If just deactivated, restarts the normal daily schedule.
+
+        cvl = await self.system.charge_voltage_limit()
+        switch = cvl != 0.0
+
+        # Not suspended, but switch has been activated
+        if self.state != State.Suspended and switch:
+            await self.change_state(State.Suspended)
+
+        # Already suspended, but switch has been deactivated
+        if self.state == State.Suspended and not switch:
+            self.previous_now = None    # reset the daily schedule
+
     async def change_state(self, new_state, target_soc=50.0):
         # Transitions to a new state.
 
@@ -334,6 +365,10 @@ class NoESSSchedule:
         elif new_state == State.CheckSoC:
             msg = f'# [Check SoC] [Target SoC {target_soc:.1f}%]'
 
+        # Suspended state does nothing
+        elif new_state == State.Suspended:
+            msg = f'# [Suspended]'
+
         # A change of state has occurred
         if new_state != self.state:
             print(msg)
@@ -342,6 +377,9 @@ class NoESSSchedule:
     async def control(self):
         # Implements the control function called repeatedly by the main control loop at 1 Hz.
         # All states are handled here.
+
+        # Check "Limit Managed Battery Charge Voltage" switch to suspend/resume operation
+        await self.check_suspend_switch()
 
         # Check daily schedule to see if change in state is needed
         await self.check_daily_schedule()
@@ -363,6 +401,15 @@ class NoESSSchedule:
 
         # Calculate estimated AC power that can be created using inverter at the current efficiency
         self.pv_power = self.efficiency * self.pv_dc_power / 100.0
+
+        # Average Critical Loads and PV Power over 10 minutes
+        if self.count > 0:
+            alpha = math.exp(-1.0 / 600.0)   # 600 seconds = 10 minute time constant
+            self.avg_output_power = (1.0 - alpha) * self.output_power[0] + alpha * self.avg_output_power
+            self.avg_pv_power = (1.0 - alpha) * self.pv_power + alpha * self.avg_pv_power
+        else:
+            self.avg_output_power = self.output_power[0]
+            self.avg_pv_power = self.pv_power
 
         # State: Charging Battery
         if self.state == State.Charging:
@@ -387,6 +434,10 @@ class NoESSSchedule:
         # State: Check SoC
         elif self.state == State.CheckSoC:
             await self.check_soc()
+
+        # State: Suspended
+        elif self.state == State.Suspended:
+            pass
 
         # Increment counter
         self.count += 1
@@ -512,7 +563,7 @@ class NoESSSchedule:
         if target_met:
             if not self.discharge_target_met:
                 self.discharge_target_met = True
-                await self.change_state(State.MonitorSoC, target_soc=50.0)
+                await self.change_state(State.MonitorSoC, self.monitoring_target_soc)
 
         if self.verbose:
             status = 'Not Discharging' if self.discharge_target_met else 'Discharging'
@@ -541,7 +592,7 @@ class NoESSSchedule:
 
                 # Current PV power is sufficient to power current inverter loads, disconnect from Grid
                 # or if current SoC > 90%, in order to burn off some SoC to prevent filling the batteries
-                if self.pv_power > self.output_power[0] or self.current_soc >= 90.0:
+                if self.avg_pv_power > self.avg_output_power or self.current_soc >= self.hi_soc:
                     await self.connect_to_grid(False)
 
             if self.verbose:
@@ -551,7 +602,7 @@ class NoESSSchedule:
                       f'[SoC {self.current_soc:5.1f}% {self.target_soc:5.1f}%] '
                       f'[Max Charge {max_charge:.0f} A] [PV DC {self.pv_dc_current:.1f} A] '
                       f'[MPPT {mppt_modes[0]} {mppt_modes[1]}] '
-                      f'[PV Power {self.pv_power:.0f} W] [Loads {self.output_power[0]:.0f} W]')
+                      f'[Avg PV Power {self.avg_pv_power:.0f} W] [Avg Loads {self.avg_output_power:.0f} W]')
 
         # ----- Grid is currently disconnected -----
         else:
@@ -569,7 +620,8 @@ class NoESSSchedule:
                 print(f'{self.time_now} [SoC Monitoring] [Grid Disconnected] '
                       f'[SoC {self.current_soc:5.1f}% {self.target_soc:5.1f}%] '
                       f'{charge} [PV DC {self.pv_dc_current:.1f} A] '
-                      f'[PV Power {self.pv_power:.0f} W] [Loads {self.output_power[0]:.0f} W]')
+                      f'[PV Power {self.pv_power:.0f} W] [Loads {self.output_power[0]:.0f} W] '
+                      f'[Eff {self.efficiency:4.1f} %]')
 
     async def check_soc(self):
         # Checks the difference between the battery BMS SoC and the shunt SoC.
@@ -582,7 +634,7 @@ class NoESSSchedule:
 
         # If difference is under threshold, transition immediately back to MonitoringSoC state
         if not self.check_recharging and abs(soc_error) < self.soc_error_threshold:
-            await self.change_state(State.MonitorSoC, self.target_soc)
+            await self.change_state(State.MonitorSoC, self.monitoring_target_soc)
             if self.verbose:
                 print(f'{self.time_now} [Check SoC] [SoC {self.current_soc:5.1f}%] [SoC Error {soc_error:5.1f}%]')
             return
@@ -596,13 +648,13 @@ class NoESSSchedule:
         # Battery BMS SoC has reached 100% SoC, done recharging, so transition back to MonitoringSoC state
         elif self.battery_soc == 100.0:
             self.check_recharging = False
-            await self.change_state(State.MonitorSoC, self.target_soc)
+            await self.change_state(State.MonitorSoC, self.monitoring_target_soc)
 
         if self.verbose:
             max_charge = await self.get_max_charge_current()
 
             print(f'{self.time_now} [Check SoC Recharging] [Grid Connected] '
-                  f'[SoC {self.current_soc:5.1f}%] [SoC Error {soc_error:5.1f}%] '
+                  f'[SoC {self.current_soc:5.1f}%] [BMS SoC {self.battery_soc:5.1f}%] '
                   f'[Max Charge Current {max_charge:.0f} A]')
 
     async def connect_to_grid(self, yes_no):
@@ -724,7 +776,7 @@ if __name__ == "__main__":
 
     # Default settings
     startup_state = State.Undefined
-    tsoc = 50.0
+    tsoc = 40.0
     do_schedule = False
 
     n = len(sys.argv)

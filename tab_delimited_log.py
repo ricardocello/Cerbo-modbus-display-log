@@ -185,10 +185,15 @@ class TabDelimitedLogReader:
         # Marks the column so that it saves each value in the file as it is read
         self.columns[name].saved_values = [] if save else None
 
+    def get_saved_column(self, name):
+        # Returns the saved values for the column
+        return self.columns[name].saved_values
+
     def read_whole_file(self):
         # Reads the whole file in; useful for saving columns for later processing
         while not self.read_next_row():
-            print(f'Line {self.line_count}')
+            pass
+            # print(f'Line {self.line_count}')
 
     def read_next_row(self):
         # Reads the next row and assigns values to each column

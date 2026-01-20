@@ -165,8 +165,12 @@ class ModbusTCPClient:
         if not self.connected:
             return
 
-        self.writer.close()
-        await self.writer.wait_closed()
+        try:
+            self.writer.close()
+            await self.writer.wait_closed()
+        except ConnectionResetError:
+            pass
+
         self.writer = None
         self.reader = None
         self.connected = False
