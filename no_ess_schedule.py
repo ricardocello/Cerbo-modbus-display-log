@@ -11,7 +11,7 @@
 # The current Daily Schedule has these actions:
 #
 # (1) Discharging State
-#     Starting before sunrise, the batteries are discharged down to the minimum SoC (e.g. 20%)
+#     Starting before sunrise, the batteries are discharged down to the minimum SoC (e.g. 15%)
 #     by powering the Critical Loads with the inverters.
 #
 #     Any available PV will also power the loads, but in the early hours this will be minimal.
@@ -24,7 +24,7 @@
 #     Minimal grid power is used to charge the batteries in this state.
 #
 #     When the SoC reaches the target SoC (e.g. 40%), the Grid is disconnected if there is sufficient
-#     PV power for the loads. Should the SoC drop below the hysteresis SoC (e.g. 30%) due to insufficient PV,
+#     PV power for the loads. Should the SoC drop below the hysteresis SoC (e.g. 35%) due to insufficient PV,
 #     the Grid is reconnected with charging coming exclusively from PV until it again exceeds the target SoC
 #     and there is sufficient PV power for the loads.
 #     Either way, all of the available PV is consumed by either the loads and/or the batteries.
@@ -43,7 +43,7 @@
 # (4) Maintaining State
 #     Starting after sunset, the battery is maintained at its SoC by disabling the charger.
 #     The Grid is reconnected overnight unless there is an outage.
-#     The SoC will typically be between 40% and 50% for a target SoC of 50%.
+#     The SoC will typically be between 30% and 40% for a target SoC of 40%.
 #     This is sufficient to carry through the dinner and evening hours, providing a backup power supply.
 #     This continues through to the next morning.
 #
@@ -132,9 +132,9 @@ class NoESSSchedule:
         # Settings
         self.target_soc = 50.0               # Target state of charge
         self.monitoring_target_soc = 40.0    # Target SoC for MonitoringSoC state
-        self.min_soc = 20.0                  # Miniumum allowable State of Charge
+        self.min_soc = 15.0                  # Miniumum allowable State of Charge
         self.hi_soc = 90.0                   # High State of Charge
-        self.hysteresis = 10.0               # Initiate recharge/discharge when this far below/above target SoC (%)
+        self.hysteresis = 5.0                # Initiate recharge/discharge when this far below/above target SoC (%)
 
         self.charge_limit_amps = 120.0       # Battery DVCC charging current limit (sized to meet battery specs)
         self.pv_charge_limit_amps = 140.0    # Battery DVCC charging current limit (sized to meet battery specs)
@@ -152,6 +152,7 @@ class NoESSSchedule:
         self.update_interval = 1.0           # Seconds
         self.state = State.Undefined         # Current state
         self.count = 0                       # Loop counter since current state started
+        self.unsuspend = False               # Set to True if suspended, but user has just unsuspended
 
         self.current_soc = 0.0               # Measured State of Charge of batteries from shunt (%)
         self.charge_current = 0.0            # Battery Charging Current from shunt (A)
@@ -302,15 +303,24 @@ class NoESSSchedule:
         action = self.action_clock.tick(self.now)
         if action is None:
             return
-
         new_state, target_soc = action[3]
 
-        print(f'# Daily Schedule action at {action[1]:02}:{action[2]:02}: '
-              f'[{new_state}] [Target SoC {target_soc:.1f}%]')
-        await self.change_state(new_state, target_soc)
+        # If in Suspended state, do not change the state, but log it anyway
+        if self.state == State.Suspended and not self.unsuspend:
+            print(f'# [Suspended] Daily Schedule action not taken at {action[1]:02}:{action[2]:02}: '
+                  f'[{new_state}] [Target SoC {target_soc:.1f}%]')
+
+        # Change to the new state, clear unsuspend flag
+        else:
+            print(f'# Daily Schedule action at {action[1]:02}:{action[2]:02}: '
+                  f'[{new_state}] [Target SoC {target_soc:.1f}%]')
+            await self.change_state(new_state, target_soc)
+
+            if self.unsuspend:
+                self.unsuspend = False
 
     async def check_suspend_switch(self):
-        # Checks the "Limit Managed Battery Chagre Voltage" switch.
+        # Checks the "Limit Managed Battery Charge Voltage" switch.
         # If just activated, changes to the Suspended state.
         # If just deactivated, restarts the normal daily schedule.
 
@@ -321,8 +331,9 @@ class NoESSSchedule:
         if self.state != State.Suspended and switch:
             await self.change_state(State.Suspended)
 
-        # Already suspended, but switch has been deactivated
+        # Already suspended, but switch has just been deactivated
         if self.state == State.Suspended and not switch:
+            self.unsuspend = True
             self.previous_now = None    # reset the daily schedule
 
     async def change_state(self, new_state, target_soc=50.0):
@@ -437,7 +448,7 @@ class NoESSSchedule:
 
         # State: Suspended
         elif self.state == State.Suspended:
-            pass
+            await self.suspended()
 
         # Increment counter
         self.count += 1
@@ -657,6 +668,15 @@ class NoESSSchedule:
                   f'[SoC {self.current_soc:5.1f}%] [BMS SoC {self.battery_soc:5.1f}%] '
                   f'[Max Charge Current {max_charge:.0f} A]')
 
+    async def suspended(self):
+        # Called when in the Suspended state
+        is_grid_connected = await self.is_grid_connected()
+        grid_status = '[Grid Connected]' if is_grid_connected else '[Grid Disconnected]'
+        max_charge = await self.get_max_charge_current()
+
+        print(f'{self.time_now} [Suspended] {grid_status} '
+              f'[SoC {self.current_soc:5.1f}%] [Max Charge Current {max_charge:.0f} A]')
+
     async def connect_to_grid(self, yes_no):
         state = await self.system.relay_1_state()
         if yes_no != state:
@@ -785,12 +805,12 @@ if __name__ == "__main__":
         # Connect to Grid, Charging Batteries to Target SoC
         if sys.argv[1] == 'charge':
             startup_state = State.Charging
-            tsoc = float(sys.argv[2]) if n > 2 else 50.0
+            tsoc = float(sys.argv[2]) if n > 2 else 40.0
 
         # Disconnect from Grid, Discharging Batteries to Target SoC
         elif sys.argv[1] == 'discharge':
             startup_state = State.Discharging
-            tsoc = float(sys.argv[2]) if n > 2 else 20.0
+            tsoc = float(sys.argv[2]) if n > 2 else 15.0
 
         # Connect to Grid, minimize battery charging
         elif sys.argv[1] == 'maintain':

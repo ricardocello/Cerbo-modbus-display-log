@@ -53,6 +53,43 @@ class Quattros(CerboGX):
         efficiency = max(efficiency, 50.0)
         return efficiency
 
+    async def measured_efficiency(self):
+        dc_watts = await self.dc_power_watts()
+        in_ac_watts = await self.input_power_watts()
+        out_ac_watts = await self.output_power_watts()
+        diff_watts = out_ac_watts[0] - in_ac_watts[0]
+
+        try:
+            if diff_watts < 0.0:   # Charging
+                efficiency = -100.0 * dc_watts / diff_watts
+            else:                  # Inverting
+                efficiency = 100.0 * diff_watts / -dc_watts
+
+        except ZeroDivisionError:
+            efficiency = 0.0
+
+        efficiency = min(efficiency, 100.0)
+        efficiency = max(efficiency, 0.0)
+        return efficiency, diff_watts, dc_watts
+
+    async def calculate_efficiency(self):
+        # Calculates the current effciency of the inverter or charger.
+        # Returns (mode, efficiency pct), where mode is either 'Charger' or 'Inverter'
+
+        eff, ac_watts, dc_watts = await self.measured_efficiency()
+        mode = 'Charger' if ac_watts < 0.0 else 'Inverter'
+        return mode, eff
+
+    async def dc_power_watts(self):
+        try:
+            result = await self.read(26, 2)
+        except self.errors:
+            return 0.0
+
+        volts = result[0] / 100.0
+        amps = self.make_signed(result[1]) / 10.0
+        return volts * amps
+
     async def set_mode_charger_only(self):
         # Switch position
         await self.write_uint(33, 1)
@@ -493,7 +530,7 @@ class Quattros(CerboGX):
                   f' [Ripple {ripple[0]:.2f} {ripple[1]:.2f} V]')
             time.sleep(1.0)
 
-    async def main_test(self):
+    async def main_test_va(self):
         # Unit Test Code: Gather info from the Quattros and display it
 
         r = await self.connect()
@@ -501,14 +538,14 @@ class Quattros(CerboGX):
             print(f'# Unable to connect to Cerbo GX at {self.ip_address}')
             return
 
-        last_out_w = await q.output_power_watts()
-        last_out_va = await q.output_power_va()
+        last_out_w = await self.output_power_watts()
+        last_out_va = await self.output_power_va()
         count = 1
 
         while True:
-            out_w = await q.output_power_watts()
-            out_va = await q.output_power_va()
-            setpoints = await q.ess_power_setpoints()
+            out_w = await self.output_power_watts()
+            out_va = await self.output_power_va()
+            setpoints = await self.ess_power_setpoints()
             if out_w[0] != last_out_w[0]:
                 print(f'Count {count}')
                 count = 0
@@ -518,6 +555,21 @@ class Quattros(CerboGX):
             last_out_w = out_w
             last_out_va = out_va
             count += 1
+
+    async def main_test(self):
+        # Unit Test Code: Gather info from the Quattros and display it
+
+        r = await self.connect()
+        if r:
+            print(f'# Unable to connect to Cerbo GX at {self.ip_address}')
+            return
+
+        while True:
+            measured_eff, ac_power, dc_power = await self.measured_efficiency()
+            est_eff = self.estimated_efficiency(ac_power)
+            print(f'Quattros: [AC Power {ac_power} W] [DC Power {dc_power:.0f} W] '
+                  f'[Estimated Eff {est_eff:.1f}] [Measured Eff {measured_eff:.1f}]')
+            time.sleep(1.0)
 
 
 if __name__ == "__main__":

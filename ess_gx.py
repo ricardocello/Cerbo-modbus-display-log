@@ -369,7 +369,7 @@ class ESS:
         self.inverter_input_power_factor = await self.quattro.input_power_factor()
         self.inverter_output_power_factor = await self.quattro.output_power_factor()
         self.inverter_ess_power_limit = round(await self.system.inverter_power_limit_watts())
-        self.inverter_efficiency = await self.system.calculate_efficiency()
+        self.inverter_efficiency = await self.quattro.calculate_efficiency()
         self.inverter_state = await self.quattro.state_string()
         self.inverter_warnings_alarms = await self.quattro.active_warnings_alarms()
         self.inverter_rack_temperature = await self.rack_temp.degrees_c()
