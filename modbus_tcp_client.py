@@ -395,6 +395,11 @@ class ModbusTCPClient:
         b = struct.pack('2H', values[1], values[0])
         return struct.unpack('i', b)[0]
 
+    @staticmethod
+    def make_unsigned32(values):
+        b = struct.pack('2H', values[1], values[0])
+        return struct.unpack('I', b)[0]
+
     # ---------------------------------------------------------------------------------------------------------------
     #  Unit Testing
     # ---------------------------------------------------------------------------------------------------------------

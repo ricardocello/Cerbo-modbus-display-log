@@ -28,6 +28,7 @@
 # -------------------------------------------------------------------------------------------------------------------
 
 import time
+import math
 import asyncio
 from cerbo_gx import *
 
@@ -35,10 +36,12 @@ from cerbo_gx import *
 class Quattros(CerboGX):
     def __init__(self, addr=settings_gx.GX_IP_ADDRESS):
         super().__init__(addr, uid=settings_gx.VEBUS_INVERTERS)
+        self.avg_efficiency = 0.0
+        self.last_mode = ''
 
     @staticmethod
     def estimated_efficiency(ac_power_watts):
-        # Calculates the Inverter or Charger efficiency based on AC power.
+        # Calculates the estimated Inverter or Charger efficiency based on AC power.
         # This was modeled by collecting lots of data and median filtering the results.
         # The two piecewise functions modeled on the data are a hyperbola (below 2500 W)
         # and a straight line (above 2500 W).
@@ -54,6 +57,9 @@ class Quattros(CerboGX):
         return efficiency
 
     async def measured_efficiency(self):
+        # Measures current effciency of the inverter or charger.
+        # Returns (efficiency pct, ac_power used, dc_power used)
+
         dc_watts = await self.dc_power_watts()
         in_ac_watts = await self.input_power_watts()
         out_ac_watts = await self.output_power_watts()
@@ -72,13 +78,21 @@ class Quattros(CerboGX):
         efficiency = max(efficiency, 0.0)
         return efficiency, diff_watts, dc_watts
 
-    async def calculate_efficiency(self):
-        # Calculates the current effciency of the inverter or charger.
+    async def calculate_efficiency(self, avg_seconds=0.0):
+        # Calculates the average effciency of the inverter or charger.
         # Returns (mode, efficiency pct), where mode is either 'Charger' or 'Inverter'
+        # Averaging restarts when the mode changes.
 
         eff, ac_watts, dc_watts = await self.measured_efficiency()
         mode = 'Charger' if ac_watts < 0.0 else 'Inverter'
-        return mode, eff
+        if self.last_mode != mode:
+            self.avg_efficiency = eff
+        self.last_mode = mode
+
+        alpha = 0.0 if avg_seconds == 0.0 else math.exp(-1.0 / avg_seconds)
+        self.avg_efficiency = (1.0 - alpha) * eff + alpha * self.avg_efficiency
+
+        return mode, self.avg_efficiency
 
     async def dc_power_watts(self):
         try:

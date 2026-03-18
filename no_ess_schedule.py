@@ -23,14 +23,18 @@
 #     until it permits all of the PV power to be consumed by the loads or the batteries.
 #     Minimal grid power is used to charge the batteries in this state.
 #
-#     When the SoC reaches the target SoC (e.g. 40%), the Grid is disconnected if there is sufficient
-#     PV power for the loads. Should the SoC drop below the hysteresis SoC (e.g. 35%) due to insufficient PV,
-#     the Grid is reconnected with charging coming exclusively from PV until it again exceeds the target SoC
-#     and there is sufficient PV power for the loads.
+#     If there is sufficient PV power for the loads, the Grid is disconnected.
+#     Should the SoC drop below the hysteresis SoC of the switchover SoC due to insufficient PV,
+#     the Grid is reconnected charging exclusively from PV until there is sufficient PV power for the loads.
 #     Either way, all of the available PV is consumed by either the loads and/or the batteries.
 #
-#     If the SoC reaches the high SoC (e.g. 90%), the Grid is disconnected in an attempt to prevent the
+#     If the SoC reaches the high SoC (e.g. 80%), the Grid is disconnected in an attempt to prevent the
 #     batteries from filling completely, regardless of whether the PV power is sufficient for the loads.
+#     If the SoC reached the min SoC (e.g. 15%), the Grid is reconnected to prevent the batteries from
+#     draining further.
+#
+#     The 10-minute averaging should prevent grid disconnects/reconnects faster than every 10 minutes.
+#     When combined with a 5% SoC hysteresis, there should not be excessive switches back and forth.
 #
 # (3) CheckSoC State
 #     Starting in the afternoon, the battery BMS SoC is checked for drift by comparing to the shunt SoC.
@@ -133,11 +137,11 @@ class NoESSSchedule:
         self.target_soc = 50.0               # Target state of charge
         self.monitoring_target_soc = 40.0    # Target SoC for MonitoringSoC state
         self.min_soc = 15.0                  # Miniumum allowable State of Charge
-        self.hi_soc = 90.0                   # High State of Charge
+        self.hi_soc = 80.0                   # High State of Charge
         self.hysteresis = 5.0                # Initiate recharge/discharge when this far below/above target SoC (%)
 
         self.charge_limit_amps = 120.0       # Battery DVCC charging current limit (sized to meet battery specs)
-        self.pv_charge_limit_amps = 140.0    # Battery DVCC charging current limit (sized to meet battery specs)
+        self.pv_charge_limit_amps = 120.0    # Battery DVCC charging current limit (sized to meet battery specs)
         self.efficiency = 92.0               # Best inverter/charger efficiency (%, will be updated)
 
         self.soc_error_threshold = 8.0       # Difference between shunt and BMS SoC causes recharge to 100% (%)
@@ -161,12 +165,14 @@ class NoESSSchedule:
         self.pv_dc_current = 0.0             # PV DC current (Amps)
         self.pv_monitor_limit = 2.0          # Maximum charge current adjusted dynamically (Amps)
         self.pv_monitor_delay = 0            # Counts down to handle Limited MPPT slow response
+        self.switch_soc = 0.0                # soc in monitor_soc for last switch to inverter
 
         self.pv_power = 0.0                  # Estimated AC power available using PV DC Power (Watts)
         self.output_power = [0.0] * 3        # Measured output power of the inverters (Watts: L1+L2, L1, L2)
 
         self.avg_output_power = 0.0          # 10 minute averge total output power for critical loads
         self.avg_pv_power = 0.0              # 10 minute averge total pv AC power available
+        self.pv_load_ratio = 0.0             # > 1.0 means loads are covered by PV power
 
         # Timing
         self.timezone = 'US/Eastern'         # Change as needed
@@ -371,6 +377,7 @@ class NoESSSchedule:
         elif new_state == State.MonitorSoC:
             msg = f'# [SoC Monitoring] [Target SoC {target_soc:.1f}%]'
             self.pv_monitor_limit = 2.0         # Adjusted dynamically (Amps)
+            self.switch_soc = self.target_soc
 
         # Check SoC state checks for BMS SoC drift and recharges if necessary
         elif new_state == State.CheckSoC:
@@ -421,6 +428,9 @@ class NoESSSchedule:
         else:
             self.avg_output_power = self.output_power[0]
             self.avg_pv_power = self.pv_power
+
+        # PV to Load Ratio
+        self.pv_load_ratio = self.avg_pv_power / self.avg_output_power if self.avg_output_power > 0.0 else 0.0
 
         # State: Charging Battery
         if self.state == State.Charging:
@@ -536,14 +546,14 @@ class NoESSSchedule:
             self.pv_monitor_limit = 1.0   # zero will never wake up MPPTs in morning
             self.pv_monitor_delay = 0
 
-        # Active MPPTs: Set the current limit to the available DC current
+        # Active MPPTs: Set the current limit to 110% of the available DC current from PV
         elif not is_limited:
-            self.pv_monitor_limit = self.pv_dc_current + 5.0
+            self.pv_monitor_limit = self.pv_dc_current * 1.10
             self.pv_monitor_delay = 0
 
         # Limited MPPTs: Increase the current limit and start the delay counter, waiting to see what happens
         elif self.pv_monitor_delay == 0:
-            self.pv_monitor_limit *= 2.0
+            self.pv_monitor_limit *= 1.5
             self.pv_monitor_delay = 10
 
         # Decrement the delay counter
@@ -583,10 +593,9 @@ class NoESSSchedule:
                   f'[SoC {self.current_soc:5.1f}%] [Target {self.target_soc:5.1f}%]')
 
     async def monitoring_soc(self):
-        # Uses only PV to charge the batteries up to the target State of Charge.
-        # Above the target SoC, disconnects from the Grid if PV power is adequate for the loads.
-        # Also disconnects from the Grid if the SoC is higher than 90% to avoid filling the batteries.
-        # If insufficient PV power is available and the SoC falls below the target SoC - hysteresis,
+        # Disconnects from the Grid if PV power is adequate for the loads based on a 10-minute average.
+        # Also disconnects from the Grid if the SoC is higher than high_soc to avoid filling the batteries.
+        # If insufficient PV power is available and the SoC falls below the last switch SoC - hysteresis,
         # the Grid is reconnected and the batteries are then recharged from PV.
         # The Grid is never used to charge the batteries in this state, only PV power is used.
 
@@ -599,12 +608,13 @@ class NoESSSchedule:
             mppt_modes, is_limited, is_off = await self.monitoring_pv()
 
             # Current State of Charge meets or exceeds target SoC
-            if self.current_soc >= self.target_soc:
+            # if self.current_soc >= self.target_soc:
 
-                # Current PV power is sufficient to power current inverter loads, disconnect from Grid
-                # or if current SoC > 90%, in order to burn off some SoC to prevent filling the batteries
-                if self.avg_pv_power > self.avg_output_power or self.current_soc >= self.hi_soc:
-                    await self.connect_to_grid(False)
+            # Current PV power is sufficient to power current inverter loads, disconnect from Grid
+            # or if current SoC > hi_soc, in order to burn off some SoC to prevent filling the batteries
+            if self.pv_load_ratio > 1.0 or self.current_soc >= self.hi_soc:
+                self.switch_soc = self.current_soc
+                await self.connect_to_grid(False)
 
             if self.verbose:
                 max_charge = await self.get_max_charge_current()
@@ -620,8 +630,12 @@ class NoESSSchedule:
             # DVCC charging limit
             await self.set_max_charge_current(self.pv_charge_limit_amps)
 
-            # Current State of Charge has fallen below target SoC - hysteresis
-            if self.current_soc < (self.target_soc - self.hysteresis):
+            # Current State of Charge is below minimum allowed
+            if self.current_soc < self.min_soc:
+                await self.connect_to_grid(True)
+
+            # Current State of Charge has fallen below switch SoC - hysteresis
+            if self.current_soc < self.hi_soc and self.current_soc < (self.switch_soc - self.hysteresis):
                 await self.connect_to_grid(True)
 
             if self.verbose:
@@ -629,7 +643,7 @@ class NoESSSchedule:
                          f'[Discharging {-self.charge_current:.1f} A]'
 
                 print(f'{self.time_now} [SoC Monitoring] [Grid Disconnected] '
-                      f'[SoC {self.current_soc:5.1f}% {self.target_soc:5.1f}%] '
+                      f'[SoC {self.current_soc:5.1f}% {self.switch_soc:5.1f}%] '
                       f'{charge} [PV DC {self.pv_dc_current:.1f} A] '
                       f'[PV Power {self.pv_power:.0f} W] [Loads {self.output_power[0]:.0f} W] '
                       f'[Eff {self.efficiency:4.1f} %]')
@@ -678,15 +692,25 @@ class NoESSSchedule:
               f'[SoC {self.current_soc:5.1f}%] [Max Charge Current {max_charge:.0f} A]')
 
     async def connect_to_grid(self, yes_no):
-        state = await self.system.relay_1_state()
-        if yes_no != state:
-            await self.system.set_relay_1(yes_no)
+        # This function assumes the GX Relay 1 is wired to the Aux input on the master Quattro,
+        # and the Programmable Relay Assistants are configured to connect or disconnect from AC In 1.
+        #
+        # The default normally open relay state corresponds to Grid Connected,
+        # so reboots of the Cerbo will not interrupt existing grid power.
+
+        return await self.system.connect_to_grid(yes_no)
 
     async def is_grid_connected(self):
-        return await self.system.relay_1_state()
+        # This function assumes the GX Relay 1 is wired to the Aux input on the master Quattro,
+        # and the Programmable Relay Assistants are configured to connect or disconnect from AC In 1.
+        #
+        # The default normally open relay state corresponds to Grid Connected,
+        # so reboots of the Cerbo will not interrupt existing grid power.
+
+        return await self.system.is_grid_connected()
 
     async def set_max_charge_current(self, amps):
-        amps = int(amps + 0.9)
+        amps = int(amps + 0.9)   # always round up to next integer value (zero still zero)
         a = await self.system.dvcc_max_charge_current_amps()
         if a != amps:
             await self.system.set_dvcc_max_charge_current_amps(amps)

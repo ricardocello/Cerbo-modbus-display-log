@@ -248,8 +248,32 @@ class System(CerboGX):
         # Read all current ESS settings at 2900
         return await self.read(2900, 4)
 
+    async def connect_to_grid(self, yes_no):
+        # This function assumes the GX Relay 1 is wired to the Aux-1 input on the master Quattro,
+        # and the Programmable Relay Assistants and General Flag
+        # are configured to connect or disconnect from AC In 1.
+        #
+        # The default normally open Cerbo relay state corresponds to Grid Connected,
+        # so reboots of the Cerbo will not interrupt existing grid power.
+
+        state = await self.is_grid_connected()
+        if yes_no != state:
+            await self.set_relay_1(not yes_no)
+
+    async def is_grid_connected(self):
+        # This function assumes the GX Relay 1 is wired to the Aux-1 input on the master Quattro,
+        # and the Programmable Relay Assistants and General Flag
+        # are configured to connect or disconnect from AC In 1.
+        #
+        # The default normally open Cerbo relay state corresponds to Grid Connected,
+        # so reboots of the Cerbo will not interrupt existing grid power.
+
+        state = await self.relay_1_state()
+        return not state
+
     async def relay_1_state(self):
         # Returns the current state of Relay #1
+        # True means closed, False means open
         # /Relay/0/State (806)
         try:
             result = await self.read_uint(806)
@@ -259,6 +283,7 @@ class System(CerboGX):
 
     async def relay_2_state(self):
         # Returns the current state of Relay #2
+        # True means closed, False means open
         # /Relay/1/State (807)
         try:
             result = await self.read_uint(807)

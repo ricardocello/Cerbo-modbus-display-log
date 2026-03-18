@@ -75,7 +75,7 @@ class ESSColorStatusDisplay(ColorStatusDisplay):
         inverter.add_parameter_and_comment('Inverter Input PF:', 'Estimated Input Power Factor')
         inverter.add_parameter_and_comment('Inverter Output PF:', 'Estimated Output Power Factor')
         inverter.add_parameter_and_comment('Inverter ESS Power Limit:', 'Dynamically adjusted power limit')
-        inverter.add_parameter_and_comment('Inverter Efficiency:', 'Estimated efficiency of charger or inverter')
+        inverter.add_parameter_and_comment('Inverter Efficiency:', '5 sec average efficiency of charger or inverter')
         inverter.add_parameter_and_comment('Inverter Temperature:', 'Temperature at top of rack')
 
         inverter.add_parameter_and_comment('Inverter State:')
