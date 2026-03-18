@@ -16,6 +16,8 @@ See https://www.victronenergy.com/upload/documents/CCGX-Modbus-TCP-register-list
 
 ## High Level Cerbo Device Files 
 
+[no_ess_schedule.py](no_ess_schedule.py)        Daily scheduler for Victron systems without ESS installed
+
 [ess_gx.py](ess_gx.py)        Main application to show status updates and log data at 1 Hz, specific to ricardocello
 
 [ettings_gx.py](settings_gx.py)   Modbus Unit Ids defined for the system, and IP address of the Cerbo GX
@@ -46,4 +48,9 @@ See https://www.victronenergy.com/upload/documents/CCGX-Modbus-TCP-register-list
 
 [modbus_tcp_client.py](modbus_tcp_client.py)     A standalone implementation of a ModbusTCP client to talk to the Cerbo GX;
                           this is NOT based on pyModbus and can be used standalone to talk to any ModbusTCP device
+
+## Other Files
+
+[eg4_waveshare.py](eg4_waveshare.py)   Handles communication with a Waveshare device connected to EG4-LL batteries using RS-485
+
 
